@@ -1,0 +1,6 @@
+**/.idea/
+***/.vs/
+*.pdf
+**/umlimage/
+**/.metals/
+**/.vscode/
