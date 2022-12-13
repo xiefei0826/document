@@ -1,0 +1,60 @@
+. nfs 搭建
++
+----
+sudo mkdir /nas 
+sudo chmod 777 -R /nas
+sudo apt-get install nfs-kernel-server 
+sudo vim /etc/exporys
+-- 加在最后一行
+/nas  *(rw,sync,no_root_squash,no_subtree_check)
+sudo restart 
+sudo systemctl restart nfs-kernel-server.service
+
+--在客户机上挂载
+
+sudo mkdir /nas
+sudo apt-get  install nfs-common
+sudo mount -t  nfs 192.168.1.131:/nas /nas
+----
+
+. 删除指定日期之前文件
++
+两种方法::
++
+.. 在一个目录中保留最近三个月的文件，三个月前的文件自动删除。
++
+----
+find /email/v2_bak -mtime +92 -type f -name *.mail[12] -exec rm -rf {} \;
+/email/v1_bak --设置查找的目录；
+-mtime +92 --设置时间为91天前；
+-type f --设置查找的类型为文件；
+-name *.mail[12] --设置文件名称中包含mail1或者mail2；
+-exec rm -f --查找完毕后执行删除操作；
+将此命令写入crontab后即可自动完成查找并删除的工作了。
+如： find /home/oracle/app/oracle/admin/bdump  -mtime +92 -type f -name '*.trc'
+
+
+find /home/oracle/app/oracle/admin/twerp/bdump  -mtime +92 -type f -name '*.trc' |xargs rm -rf
+
+
+-amin n
+查找系统中最后N分钟访问的文件
+-atime n
+查找系统中最后n*24小时访问的文件
+-cmin n
+查找系统中最后N分钟被改变状态的文件
+-ctime n
+查找系统中最后n*24小时被改变状态的文件
+-mtime n
+查找系统中最后n*24小时被修改的文件
+----
+
+
+. 用：find . -ctime +40 -type f | xargs rm -rf
+----
+文件的Access time，atime 是在读取文件或者执行文件时更改的。
+文件的 Modified time，mtime 是在写入文件时随文件内容的更改而更改的。
+文件的 Create time，ctime 是在写入文件、更改所有者、权限或链接设置时随 Inode 的内容更改而更改的。
+----
+
+

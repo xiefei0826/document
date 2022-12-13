@@ -1,0 +1,79 @@
+= gitlab CI/CD方案
+
+== gitlab 介绍
+
+=== 核心功能
+[plantuml]
+....
+@startmindmap
++ gitlab
+++ 仓库
++++ 代码管理
++++ 分支管理
+++ 议题
++++ 需求收集
++++ 进度管控
++++ 工时、工作量计算
+++ CI/CD
++++ 自动化测试
++++ 编译
++++ 发布
+++ 分析
++++ 效率分析
++++ 工作量分析
+++ wiki
++++ 文档管理
++++ 知识积累
+@endmindmap
+....
+
+== gitlab-runner 
+
+=== 安装
+
+. 增加存储库
++
+ubuntu/debian/mint::
++
+----
+curl -L "https://packages.gitlab.com/install/repositories/runner/gitlab-runner/script.deb.sh" | sudo bash
+----
++
+rhel/centos/fedora::
++
+----
+curl -L "https://packages.gitlab.com/install/repositories/runner/gitlab-runner/script.rpm.sh" | sudo bash
+----
+
+. 安装
++
+ubuntu/debian/mint::
++
+----
+sudo apt-get install gitlab-runner
+----
++
+rhel/centos/fedora::
++
+----
+sudo yum install gitlab-runner
+----
+
+=== 注册
+----
+sudo gitlab-runner register \
+  --non-interactive \
+  --url "https://gitlab.com/" \
+  --registration-token "PROJECT_REGISTRATION_TOKEN" \
+  --executor "docker" \
+  --docker-image alpine:latest \
+  --description "docker-runner" \
+  --maintenance-note "Free-form maintainer notes about this runner" \
+  --tag-list "docker,aws" \
+  --run-untagged="true" \
+  --locked="false" \
+  --access-level="not_protected"
+----
+
+
+

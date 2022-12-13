@@ -1,0 +1,75 @@
+= 微服务
+
+== 组成
+[plantuml]
+....
+skinparam componentStyle rectangle
+component 微服务架构{
+    component 网络 as network{
+        [内部网关]
+        [web服务器]
+    }
+    component 应用 as application{
+        [前端]
+        [后端服务]
+    }
+    network <-down---> application
+    component 中间件 as middleware{
+        [消息队列]
+        [分布式锁]
+        [分布式事务]
+        [日志记录]
+        [服务聚合]
+        [任务调度]
+        [链路追踪]
+        [配置中心]
+        [认证、权限中心]
+        [注册发现]
+        [日志记录] -- [链路追踪] : 特殊格式日志
+        [日志记录] -- [监控报警] : 服务运行状态日志 
+    }
+    middleware <-up---> application
+    component 数据库 as db{
+        [OLAP] 
+        [OLTP] 
+        [缓存]
+        [大数据]
+        [OLTP] --> [OLAP]
+        [OLTP] --> [缓存]
+        [OLTP] --> [大数据]
+    }
+    application <-left--> db
+    db <-down--> middleware
+}
+....
+
+<<<
+   
+[plantuml]
+....
+skinparam componentStyle rectangle
+component 微服务能力{
+    component 高可用 as ha{
+        [熔断] #red
+        [限流] #red
+        [告警] #yellow
+        [恢复] #red
+        [读写分离] 
+        [故障自愈] #red
+        [负载均衡] #yellow
+        [监控报警] #yellow
+        [蓝绿] #yellow
+        [灰度] #red
+    }
+
+    component 基础能力 as base{
+        [容器化]
+        [服务编排]
+        [领域驱动]
+        [CI/CD]
+    }
+    ha <-left-> base
+}
+....
+
+
