@@ -13,7 +13,7 @@ component 微服务架构{
         [前端]
         [后端服务]
     }
-    network <-down---> application
+    network --> application
     component 中间件 as middleware{
         [消息队列]
         [分布式锁]
@@ -28,7 +28,7 @@ component 微服务架构{
         [日志记录] -- [链路追踪] : 特殊格式日志
         [日志记录] -- [监控报警] : 服务运行状态日志 
     }
-    middleware <-up---> application
+    application --> middleware
     component 数据库 as db{
         [OLAP] 
         [OLTP] 
@@ -38,8 +38,8 @@ component 微服务架构{
         [OLTP] --> [缓存]
         [OLTP] --> [大数据]
     }
-    application <-left--> db
-    db <-down--> middleware
+    application --> db
+    middleware --> db
 }
 ....
 
@@ -68,7 +68,6 @@ component 微服务能力{
         [领域驱动]
         [CI/CD]
     }
-    ha <-left-> base
 }
 ....
 
