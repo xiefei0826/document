@@ -60,6 +60,11 @@ sudo yum install gitlab-runner
 ----
 
 === 注册
+
+----
+sudo gitlab-runner install  --user ubuntu  --working-directory "/home/ubuntu/gitlab"
+----
+
 ----
 sudo gitlab-runner register \
   --non-interactive \

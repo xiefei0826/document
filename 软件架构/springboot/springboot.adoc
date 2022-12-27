@@ -1,0 +1,13 @@
+= spring boot 
+
+== Bean 生命周期
+[plantuml]
+....
+start
+:资源定位;
+:Bean定义;
+:发布Bean定义;
+:实例化;
+:依赖注入;
+end
+....
