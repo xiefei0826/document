@@ -1,4 +1,13 @@
 = 微服务
+:stem: latexmath
+:icons: font
+:source-highlighter: highlight.js
+:sectnums:
+:sectlinks:
+:sectnumlevels: 4
+:toc: left
+:toc-title: 目录
+:toclevels: 3  
 
 == 组成
 [plantuml]
