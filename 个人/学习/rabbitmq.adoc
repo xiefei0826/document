@@ -1,0 +1,48 @@
+= rabbitmq 
+:stem: latexmath
+:icons: font
+:source-highlighter: highlight.js
+:sectnums:
+:sectlinks:
+:sectnumlevels: 4
+:toc: left
+:toc-title: 目录
+:toclevels: 3  
+
+== 什么是消息队列 
+
+* #消息# 指的是两个应用间传递的数据。数据的类型有很多种形式，可能只包含文本字符串，也可能包含嵌入对象。
+* #“消息队列（Message Queue）”是在消息的传输过程中保存消息的容器# 。在消息队列 中，通常有生产者和消费者两个角色 ，生产者只负责发送数据到消息队列 ，谁从消息队列 中取出 数据处理，他不管。消费者只负责从消息队列中取出 数据处理，他不管这是谁发送的数据。
+
+[plantuml]
+----
+(生产者) as P
+
+queue 消息队列 as queue
+P-right->queue
+(消费者) as C
+queue-right->C
+----
+
+== 为什么使用消息队列 
+
+=== 主要有三个作用
+
+* #解耦# 假设有系统B、C、D都需要系统A的数据，于是系统A调用三个方法发送数据到B、C、D。这里，系统D不需要了，那就需要在系统A把相关的代码删除。假设这时有个新的系统E需要数据，这时系统A又要增加调用系统E的代码。为了降低这种强耦合，就可以使用MQ,系统A只需要把数据发送到MQ,其他系统如果需要数据，则从MQ中获取即可。
+
+[plantuml]
+----
+rectangle 系统A\nsendMsgForB()\nsendMsgForC()\nSendMsgForD()删除  as "A"{
+
+}
+
+rectangle 系统B as B
+
+
+
+rectangle 系统C as C
+
+rectangle 系统D as D
+
+rectangle 系统E(新增)  as E
+----
