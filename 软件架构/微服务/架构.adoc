@@ -8,6 +8,7 @@
 :toc: left
 :toc-title: 目录
 :toclevels: 3  
+:nofooter:
 
 == 组成
 [plantuml]
