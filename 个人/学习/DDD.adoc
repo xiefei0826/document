@@ -36,6 +36,7 @@
 
 [plantuml]
 ----
+@startuml
 :领域专家和开发团队: as team
 note top
 问题域
@@ -64,7 +65,7 @@ subdomain -- core
 
 [域模型] as model
 
-
+@enduml
 
 ----
 
@@ -177,6 +178,7 @@ subdomain -- core
 
 [plantuml]
 ----
+@startuml
 [单体结构] as single
 [代码分离] as  code
 single -right->code
@@ -187,6 +189,7 @@ sync -down-> remove
 
 [拆分完成]  as success
 remove -left-> success
+@enduml
 ----
 
 * 拆分 后业务变了增加了怎么办？
@@ -249,6 +252,7 @@ remove -left-> success
 
 [plantuml]
 ----
+@startuml
 [发送方] as send
 
 package 消费方{
@@ -260,6 +264,7 @@ package 消费方{
   database db as db
   do --> db :4  消费方更新自身状态
 }
+@enduml
 ----
 
 
@@ -267,6 +272,7 @@ package 消费方{
 
 [plantuml]
 ----
+@startuml
 [发送方] as send
 
 package 消费方{
@@ -277,4 +283,5 @@ package 消费方{
   database db 
   do -right->db
 }
+@enduml
 ----

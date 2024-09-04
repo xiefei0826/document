@@ -11,8 +11,13 @@
 :nofooter:
 
 == 组成
+
 [plantuml]
+
 ....
+@startuml
+
+
 skinparam componentStyle rectangle
 component 微服务架构{
     component 网络 as network{
@@ -51,12 +56,15 @@ component 微服务架构{
     application --> db
     middleware --> db
 }
+
+@enduml
 ....
 
 <<<
    
 [plantuml]
 ....
+@startuml
 skinparam componentStyle rectangle
 component 微服务能力{
     component 高可用 as ha{
@@ -79,6 +87,7 @@ component 微服务能力{
         [CI/CD]
     }
 }
+@enduml
 ....
 
 

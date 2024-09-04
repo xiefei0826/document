@@ -12,6 +12,7 @@
 == Bean 生命周期
 [plantuml]
 ....
+@startuml
 start
 :资源定位;
 :Bean定义;
@@ -19,4 +20,5 @@ start
 :实例化;
 :依赖注入;
 end
+@enduml
 ....

@@ -16,12 +16,14 @@
 
 [plantuml]
 ----
+@startuml
 (生产者) as P
 
 queue 消息队列 as queue
 P-right->queue
 (消费者) as C
 queue-right->C
+@enduml
 ----
 
 == 为什么使用消息队列 
@@ -32,6 +34,7 @@ queue-right->C
 
 [plantuml]
 ----
+@startuml
 rectangle 系统A\nsendMsgForB()\nsendMsgForC()\nSendMsgForD()删除  as "A"{
 
 }
@@ -45,4 +48,5 @@ rectangle 系统C as C
 rectangle 系统D as D
 
 rectangle 系统E(新增)  as E
+@enduml
 ----
