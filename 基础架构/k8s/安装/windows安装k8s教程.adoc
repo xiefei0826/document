@@ -14,9 +14,11 @@
 ```
 https://www.docker.com/products/docker-desktop
 ```
+
 == 安装 docker-desktop
 
 === 前提
+
 * 主板中开启虚拟化
 * 开启 windows 子系统
 
@@ -24,9 +26,7 @@ image::image/1.png[]
 
 * 开启wsl2并安装 ubuntu 20.4 https://docs.microsoft.com/zh-cn/windows/wsl/install-win10[教程]
 
-
-
-=== 下载镜像 
+=== 下载镜像
 
 * 管理员 powershell 执行
 
@@ -39,6 +39,8 @@ image::image/1.png[]
 image::image/2.png[]
 
 * 下载github代码并切换到对应版本下载镜像
+
+https://github.com/denverdino/k8s-for-docker-desktop.git[ k8s-for-docker-desktop 地址]
 
 === 开启k8s 
 

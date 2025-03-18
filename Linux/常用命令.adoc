@@ -58,3 +58,11 @@ find /home/oracle/app/oracle/admin/twerp/bdump  -mtime +92 -type f -name '*.trc'
 ----
 
 
+. 字体转换
+
+....
+for file in *.otf; do
+    fontforge -lang=ff -c "Open('$file');Simplify(); CorrectDirection();
+ Generate('${file%.otf}.ttf'); Close();"
+done
+....
