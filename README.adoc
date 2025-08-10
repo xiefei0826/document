@@ -1,0 +1,15 @@
+= 个人文档集合
+:encoding: UTF-8
+:pdf-theme: default
+:stem: latexmath
+:icons: font
+:source-highlighter: highlight.js
+:sectnums:
+:sectlinks:
+:sectnumlevels: 4
+:toc: left
+:toc-title: 目录
+:toclevels: 2
+:nofooter:
+:pdf-theme: default-with-fallback-font
+

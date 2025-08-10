@@ -1,0 +1,71 @@
+= 软件功能设想
+:encoding: UTF-8
+:pdf-theme: default
+:stem: latexmath
+:icons: font
+:source-highlighter: highlight.js
+:sectnums:
+:sectlinks:
+:sectnumlevels: 4
+:toc: left
+:toc-title: 目录
+:toclevels: 2
+:nofooter:
+:pdf-theme: default-with-fallback-font
+
+
+
+== 问题思考
+
+== 目标
+
+== 功能设想
+
+== 功能实现
+
+
+[plantuml]
+
+....
+@startuml
+
+
+skinparam componentStyle rectangle
+component 微服务架构{
+    component 网络 as network{
+        [内部网关]
+        [web服务器]
+    }
+    component 应用 as application{
+        [前端]
+        [后端服务]
+    }
+    network --> application
+    component 中间件 as middleware{
+        [分布式锁]
+        [分布式事务]
+        [服务聚合]
+        [任务调度]
+        [链路追踪]
+        [配置中心]
+        [认证、权限中心]
+        [注册发现]
+        [日志记录] -- [链路追踪] : 特殊格式日志
+        [日志记录] -- [监控报警] : 服务运行状态日志
+    }
+    application --> middleware
+    component 数据库 as db{
+        [OLAP]
+        [OLTP]
+        [缓存]
+        [大数据]
+        [OLTP] --> [OLAP]
+        [OLTP] --> [缓存]
+        [OLTP] --> [大数据]
+    }
+    application --> db
+    middleware --> db
+}
+
+@enduml
+....

@@ -1,0 +1,30 @@
+= 打招呼语录
+:encoding: UTF-8
+:pdf-theme: default
+:stem: latexmath
+:icons: font
+:source-highlighter: highlight.js
+:sectnums:
+:sectlinks:
+:sectnumlevels: 4
+:toc: left
+:toc-title: 目录
+:toclevels: 3  
+:nofooter:
+:pdf-theme: default-with-fallback-font
+
+== 技术总监
+
+```
+您好！
+我认真阅读了你们招聘需求，很符合你们要求。
+目前已经工作10年，统招本科毕业。
+工作中多次获得公司及同事认可。
+目前处于离职状态。
+期待与你详细沟通该职位。
+```
+
+
+== 架构师
+
+== 开发
