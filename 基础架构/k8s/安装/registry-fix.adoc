@@ -1,0 +1,114 @@
+= Containerd 镜像配置修复指南
+
+== 问题分析
+
+从错误信息可以看出，虽然配置了镜像仓库，但 containerd 仍然在尝试访问原始地址 `asia-east1-docker.pkg.dev`，而不是走镜像地址 `k8s.m.daocloud.io`。
+
+== 解决方案
+
+### 1. 检查当前配置
+
+确认 `/etc/containerd/certs.d/registry.k8s.io/hosts.toml` 文件内容：
++
+[source,bash]
+----
+cat /etc/containerd/certs.d/registry.k8s.io/hosts.toml
+----
+
+### 2. 修正配置格式
+
+**正确的配置格式应该是**：
++
+[source,toml]
+----
+server = "https://registry.k8s.io"
+
+[host."https://k8s.m.daocloud.io"]
+  capabilities = ["pull", "resolve"]
+  override_path = true
+----
+
+**关键修改**：
+* 添加 `override_path = true` 参数
+
+### 3. 更新所有镜像仓库配置
+
+**registry.k8s.io** (`/etc/containerd/certs.d/registry.k8s.io/hosts.toml`):
++
+[source,toml]
+----
+server = "https://registry.k8s.io"
+
+[host."https://k8s.m.daocloud.io"]
+  capabilities = ["pull", "resolve"]
+  override_path = true
+----
+
+**k8s.gcr.io** (`/etc/containerd/certs.d/k8s.gcr.io/hosts.toml`):
++
+[source,toml]
+----
+server = "https://k8s.gcr.io"
+
+[host."https://k8s-gcr.m.daocloud.io"]
+  capabilities = ["pull", "resolve"]
+  override_path = true
+----
+
+### 4. 验证配置
+
+重启 containerd 后验证配置：
++
+[source,bash]
+----
+# 重启服务
+sudo systemctl restart containerd
+
+# 检查服务状态
+sudo systemctl status containerd
+
+# 验证镜像拉取
+sudo ctr images pull registry.k8s.io/pause:3.9
+----
+
+### 5. 备选方案：回退到旧版配置
+
+如果新配置方式仍然无效，可以暂时回退到旧版配置方式：
+
+**修改 `/etc/containerd/config.toml`**：
++
+[source,toml]
+----
+[plugins."io.containerd.grpc.v1.cri".registry]
+  config_path = ""
+
+  [plugins."io.containerd.grpc.v1.cri".registry.mirrors]
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."registry.k8s.io"]
+      endpoint = ["https://k8s.m.daocloud.io"]
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."k8s.gcr.io"]
+      endpoint = ["https://k8s-gcr.m.daocloud.io"]
+----
+
+== 调试步骤
+
+1. **检查 containerd 日志**：
++
+[source,bash]
+----
+sudo journalctl -u containerd -f
+----
+
+2. **验证配置是否加载**：
++
+[source,bash]
+----
+sudo ctr version
+sudo crictl info
+----
+
+3. **测试网络连接**：
++
+[source,bash]
+----
+curl -I https://k8s.m.daocloud.io/v2/
+----
