@@ -138,13 +138,13 @@ version = 2
       config_path = ""
 
       [plugins."io.containerd.grpc.v1.cri".registry.configs]
-        [plugins."io.containerd.grpc.v1.cri".registry.configs."harbor.zxsz.internal:80"]
-          [plugins."io.containerd.grpc.v1.cri".registry.configs."harbor.zxsz.internal:80".tls]
+        [plugins."io.containerd.grpc.v1.cri".registry.configs."harbor.zxsz.k8s"]
+          [plugins."io.containerd.grpc.v1.cri".registry.configs."harbor.zxsz.k8s".tls]
             insecure_skip_verify = true
 
       [plugins."io.containerd.grpc.v1.cri".registry.mirrors]
-        [plugins."io.containerd.grpc.v1.cri".registry.mirrors."harbor.zxsz.internal:80"]
-          endpoint = ["http://harbor.zxsz.internal:80"]
+        [plugins."io.containerd.grpc.v1.cri".registry.mirrors."harbor.zxsz.k8s"]
+          endpoint = ["https://harbor.zxsz.k8s"]
         [plugins."io.containerd.grpc.v1.cri".registry.mirrors."docker.elastic.co"]
           endpoint = ["https://elastic.m.daocloud.io"]
         [plugins."io.containerd.grpc.v1.cri".registry.mirrors."docker.io"]
