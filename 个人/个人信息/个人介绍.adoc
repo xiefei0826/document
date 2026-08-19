@@ -13,7 +13,9 @@
 :nofooter:
 :pdf-theme: default-with-fallback-font
 
-<<<
+++++
+<div style="page-break-before: always;"></div>
+++++
 
 == 基本信息
 
@@ -54,7 +56,9 @@
 * 自我驱动，快速适应，结果导向
 
 
-<<<
+++++
+<div style="page-break-before: always;"></div>
+++++
 
 == 工作经历
 
