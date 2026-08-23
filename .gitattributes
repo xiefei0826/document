@@ -1,0 +1,20 @@
+# 统一以 LF 换行符签出，避免 Windows CRLF 破坏 shell shebang 导致 Docker 构建失败
+* text=auto eol=lf
+
+# 脚本类文件强制 LF
+*.sh text eol=lf
+*.bash text eol=lf
+
+# 构建与配置文件
+Dockerfile text eol=lf
+*.Dockerfile text eol=lf
+docker-compose.yml text eol=lf
+docker-compose.yaml text eol=lf
+.gitattributes text eol=lf
+
+# 文本文档
+*.md text eol=lf
+*.txt text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.adoc text eol=lf
