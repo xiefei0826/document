@@ -1,0 +1,305 @@
+= 中间件面试手册（Redis / MQ / 分布式协调）
+:doctype: article
+:toc: left
+:toclevels: 3
+:sectnums:
+:sectnumlevels: 3
+:source-highlighter: highlight.js
+:toc-title: 目录
+
+覆盖面试高频中间件：Redis、消息队列（Kafka/RocketMQ/RabbitMQ）、ZooKeeper、Elasticsearch、Netty、Nginx。
+
+== Redis
+
+=== 数据结构与底层实现
+
+[cols="1,2,2"]
+|===
+| 类型 | 用途 | 底层编码
+| String | 缓存、计数、分布式锁 | int / embstr / raw（SDS 简单动态字符串）
+| List | 队列、栈、消息列表 | 3.2+ quicklist（ziplist + linkedlist）
+| Hash | 对象缓存 | ziplist / hashtable
+| Set | 去重、交集 | intset / hashtable
+| ZSet | 排行榜、延时队列 | ziplist / skiplist + dict
+|===
+
+=== 持久化
+
+- *RDB*：快照，`bgsave` fork 子进程写二进制文件；恢复快，可能丢最近数据；`save 900 1` 等触发。
+- *AOF*：追加写命令日志，`appendfsync always/everysec/no`；`AOF` 重写 `bgrewriteaof` 压缩；数据更完整。
+- 混合持久化（4.0+）：`AOF` 开头嵌入 RDB，兼顾恢复速度与完整性。
+- 数据丢失权衡：`everysec` 最多丢 1 秒。
+
+=== 主从、哨兵、集群
+
+- *主从复制*：全量（RDB）+ 增量（命令传播，`repl_backlog` 环形缓冲区）；读写分离、备份。
+- *哨兵 Sentinel*：监控、自动故障转移、通知；哨兵间 Raft 选举 leader 完成主节点切换；主观下线 → 客观下线。
+- *Cluster 集群*：`16384` 个哈希槽，`CRC16(key) % 16384` 分槽；主从分片 + 故障转移；`MOVED/ASK` 重定向；数据分片横向扩容。
+
+=== 缓存三大问题
+
+- *穿透*：查不存在数据直达 DB。解决：缓存空值（短 TTL）、布隆过滤器 `BloomFilter`。
+- *击穿*：热点 key 失效瞬间大量请求打 DB。解决：互斥锁重建、逻辑过期 + 后台刷新。
+- *雪崩*：大量 key 同时失效或 Redis 宕机。解决：TTL 加随机值、多级缓存、集群高可用、限流降级。
+
+=== 一致性
+
+- 先更 DB 再删缓存（推荐）；延迟双删；订阅 binlog（Canal）异步删除。
+- 最终一致性为主，强一致需分布式锁或版本号。
+- 写多读少 / 强一致场景慎用缓存。
+
+=== 过期与淘汰
+
+- 过期删除：惰性删除（访问时判断）+ 定期删除（周期性抽样）。
+- 内存淘汰策略（`maxmemory-policy`）：`noeviction`、`allkeys-lru/lfu`、`volatile-lru/lfu/ttl/random`、`allkeys-random`。
+
+=== 高并发场景
+
+- *分布式锁*：`SET NX EX` + 唯一 token，解锁用 Lua 保证原子删除（比较 token）；`Redisson` 看门狗自动续期 + 可重入。
+- *分布式限流*：滑动窗口、令牌桶（Lua + 有序集合）。
+- *延迟队列*：ZSet 按时间戳排序 + 轮询；或 Redis Stream。
+- *发布订阅*：`PUBLISH/SUBSCRIBE`，不持久，丢消息风险。
+
+=== 线程模型
+
+- Redis 6 前单线程（网络 I/O + 命令执行），但 `bgsave`、AOF 刷盘等有后台线程。
+- 6.0 引入多线程 I/O（读/写 socket 并行），命令执行仍单线程保证原子性。
+- 快的原因：纯内存、单线程无锁切换、I/O 多路复用（epoll）、高效数据结构。
+
+== 消息队列
+
+=== 为什么用 MQ / 应用场景
+
+- 异步（下单后异步发短信）、削峰填谷（秒杀）、解耦（系统间低耦合）。
+- 代价：系统复杂度、可用性降低、一致性问题、重复/丢失/顺序问题。
+
+=== 核心概念对比
+
+[cols="1,1,1,1"]
+|===
+| 维度 | Kafka | RocketMQ | RabbitMQ
+| 定位 | 日志/大数据流，高吞吐 | 金融级消息，事务 | 通用企业级，灵活路由
+| 存储 | 磁盘顺序写，日志 | CommitLog 顺序写 | 队列内存+磁盘
+| 吞吐 | 极高 | 高 | 中
+| 顺序 | 分区内有序 | 队列内有序（顺序消息） | 单队列有序
+| 延迟 | 中 | 低（支持定时/事务） | 低
+| 事务 | 不重点 | 事务/半消息 | 较少用
+| 协议 | 自有 | 自有（类 Kafka 设计） | AMQP
+|===
+
+=== Kafka 核心
+
+- 组成：Producer / Consumer / Broker / Topic / Partition / Consumer Group。
+- 分区：顺序写追加日志，`offset` 定位；分区内有序。
+- 副本：Leader/Follower，`ISR` 同步副本集合，`acks=0/1/all`。
+- 高吞吐：顺序写磁盘、页缓存、零拷贝（`sendfile`）、批量压缩、分区并行。
+- 消费：消费组内一个分区只被一个消费者消费；`__consumer_offsets` 存位移。
+- 可靠性：`acks=all` + 幂等（`enable.idempotence`）+ 事务保证 exactly-once。
+- 数据保留：按时间/大小，`segment` 分段，可重读。
+
+=== RocketMQ 核心
+
+- 组成：NameServer（路由）、Broker（存储）、Producer、Consumer。
+- 存储：`CommitLog` 顺序写 + `ConsumeQueue` 索引 + `IndexFile`。
+- 消息类型：普通、顺序（`MessageQueueSelector` + 局部锁）、延迟（18 个延迟级别）、事务（半消息 + 回查）。
+- 事务消息：半消息 → 本地事务 → commit/rollback，Broker 定时回查。
+- 重复消费：天然至少一次，需幂等（业务唯一键 / 状态表）。
+
+=== 消息可靠性三问题
+
+- *丢失*：生产端（确认/重试）、Broker（持久化+副本）、消费端（先消费后提交 offset / 手动 ack）。
+- *重复*：幂等设计（唯一键去重、状态机、乐观锁）。
+- *顺序*：同一业务 key 路由到同一分区/队列；局部有序。
+
+=== RabbitMQ 核心
+
+- Exchange 类型：direct（精确路由）、fanout（广播）、topic（通配符）、headers。
+- 可靠性：生产者 confirm、消费者手动 ack、队列/消息持久化。
+- 死信队列（DLX）、延迟队列（TTL + DLX 或延迟插件）。
+
+=== 如何保证消息不丢、不重、有序
+
+1. 不丢：生产确认 + Broker 持久化 + 消费手动确认（ack 时机在业务成功之后）。
+2. 不重：业务幂等（数据库唯一索引、Redis setnx、状态机）。
+3. 有序：分区/队列内有序，单 key 路由同一分区，消费端单线程或加锁。
+
+== ZooKeeper / 分布式协调
+
+- 数据模型：树形 ZNode（持久/临时/顺序节点）。
+- 用途：配置中心、命名服务、分布式锁、选主、注册中心（Dubbo 早期）。
+- 一致性：ZAB 协议，过半写入成功即成功，保证顺序一致。
+- 分布式锁：临时顺序节点，最小序号获得锁，监听前一节点；或 `curator` 封装。
+- 会话：心跳维持，临时节点随会话失效自动删除。
+- 注册中心对比：ZooKeeper（CP）vs Eureka（AP）vs Nacos（AP+CP 可切换）。
+
+== Elasticsearch
+
+- 倒排索引：词项 → 文档列表，全文检索核心。
+- 架构：Index → Shard（主分片 + 副本），节点角色（master/data/coordinate/ingest）。
+- 写入：refresh（默认 1s 可见）、translog（WAL 防丢失）、flush（落 Lucene segment）。
+- 查询：query（评分）与 filter（缓存不评分）；`bool` 组合 must/should/must_not。
+- 与关系库对比：ES 不适合事务与频繁更新，适合检索/聚合/日志。
+- 深度分页：`from+size` 有性能问题，用 `search_after` 或 scroll。
+
+== Netty
+
+- 基于 NIO，`EventLoop`（单线程事件循环）+ `Channel` + `ChannelHandler` + `ByteBuf`。
+- Reactor 模型：主从 Reactor，BossGroup 处理连接，WorkerGroup 处理读写。
+- 零拷贝：`CompositeByteBuf`、`FileRegion.transferTo`、直接内存。
+- 解决粘包/拆包：`DelimiterBasedFrameDecoder`、`LengthFieldBasedFrameDecoder`、`FixedLengthFrameDecoder`。
+
+== Nginx
+
+- 反向代理、负载均衡、静态资源、动静分离、限流。
+- 负载均衡策略：轮询、加权轮询、`ip_hash`、`least_conn`、`fair/url_hash`（需模块）。
+- 高并发：Master-Worker 多进程、epoll 多路复用。
+
+== 各中间件擅长领域与注意点
+
+=== Redis
+
+- *擅长领域*：缓存、分布式锁、排行榜（ZSet）、计数器、限流、去重（Set/布隆过滤器）、Session 共享、发布订阅、延时队列（ZSet/Stream）。
+- *注意点*：
+  - 纯内存，容量受内存限制，大 value 拖慢网络与内存效率。
+  - 持久化（RDB/AOF）存在数据丢失窗口，不能作为唯一数据源。
+  - 集群下多 key / 跨槽操作受限，需用 hash tag 保证同槽。
+  - 大 key、热 key 会打爆单节点，需拆分或本地缓存兜底。
+  - 单命令原子，多命令需 Lua 或事务保证原子。
+
+=== Kafka
+
+- *擅长领域*：高吞吐日志/事件流、大数据管道、消息可重放/审计、流式计算（配合 Flink/Spark）、削峰解耦。
+- *注意点*：
+  - 攒批导致延迟偏高，不适合低延迟即时场景。
+  - 仅分区内有序，全局无序。
+  - 位移提交与重复消费需业务幂等兜底。
+  - 传统版本依赖 ZooKeeper（新版本 KRaft 已可去 ZK）。
+
+=== RocketMQ
+
+- *擅长领域*：金融级消息、事务消息（半消息）、顺序消息、延迟消息、大规模业务消息（阿里生态）。
+- *注意点*：
+  - 组件较多（NameServer/Broker），运维成本较高。
+  - 至少一次投递，需业务幂等。
+  - 延迟消息为固定级别，不够灵活。
+
+=== RabbitMQ
+
+- *擅长领域*：灵活路由（direct/fanout/topic）、企业级、低延迟、标准 AMQP 协议、与多语言互通。
+- *注意点*：
+  - 吞吐相对低，不适合超大流量。
+  - 集群/镜像队列/持久化配置复杂，Erlang 语言运维门槛高。
+
+=== ZooKeeper
+
+- *擅长领域*：分布式协调（配置中心、命名服务、选主、分布式锁）、强一致元数据。
+- *注意点*：
+  - 不适合存大数据，znode 不宜过大、数量不宜过多。
+  - 是 CP 系统，网络分区时可能短暂不可用。
+  - 写性能有限，适合读多写少。
+
+=== Elasticsearch
+
+- *擅长领域*：全文检索、日志分析、聚合统计、时序数据检索与可视化（ELK）。
+- *注意点*：
+  - 不适合事务与频繁更新（写放大、段合并开销）。
+  - 近实时（refresh 默认 1s），非强一致。
+  - 内存/CPU 消耗大，需 JVM 与分片调优；深分页性能差。
+
+=== Netty
+
+- *擅长领域*：高性能网络通信、网关、RPC 框架底层、长连接推送。
+- *注意点*：
+  - 需处理粘包/拆包。
+  - `ByteBuf` 引用计数易导致内存泄漏，需正确 release。
+  - 需理解 EventLoop 线程模型，避免阻塞事件循环。
+
+=== Nginx
+
+- *擅长领域*：反向代理、负载均衡、静态资源、限流、动静分离。
+- *注意点*：
+  - 动态内容需转发后端；健康检查与复杂 LB 依赖第三方模块/商业版。
+  - 配置变更需 reload，注意平滑升级。
+
+== 高频真题与参考答案
+
+=== 1. Redis 有哪些数据结构？底层实现？
+
+- String（SDS，int/embstr/raw）、List（quicklist）、Hash（ziplist/hashtable）、Set（intset/hashtable）、ZSet（skiplist + dict）。
+- 另有大类：Bitmap、HyperLogLog、GEO、Stream。
+
+=== 2. RDB 与 AOF 的区别？如何选择？
+
+- RDB：二进制快照，恢复快、文件小，但可能丢最近数据；适合备份/冷备。
+- AOF：追加命令日志，数据更完整，`everysec` 最多丢 1 秒；文件大、恢复慢，可重写压缩。
+- 选择：对数据完整性要求高用 AOF（或混合持久化）；做备份、能容忍少量丢失用 RDB；生产常「RDB + AOF 混合」。
+
+=== 3. 缓存穿透、击穿、雪崩分别是什么？如何解决？
+
+- 穿透：查不存在数据直达 DB → 缓存空值（短 TTL）+ 布隆过滤器。
+- 击穿：热点 key 失效瞬间打爆 DB → 互斥锁重建、逻辑过期 + 后台刷新。
+- 雪崩：大量 key 同时失效或 Redis 宕机 → TTL 加随机值、多级缓存、集群高可用、限流降级。
+
+=== 4. 缓存与数据库一致性如何保证？
+
+- 推荐「先更 DB 再删缓存」；延迟双删兜底；订阅 binlog（Canal）异步删除。
+- 本质是最终一致；强一致需分布式锁/版本号。写多读少或强一致场景慎用缓存。
+
+=== 5. Redis 为什么快？6.0 多线程是什么？
+
+- 快：纯内存、单线程无锁切换、I/O 多路复用（epoll）、高效数据结构、命令原子。
+- 6.0 多线程：仅网络 I/O 读写（解析/回写 socket）多线程化，命令执行仍是单线程，保证原子性。
+
+=== 6. 用 Redis 实现分布式锁，注意哪些问题？
+
+- 加锁：`SET key token NX EX`（原子）。
+- 释放：Lua 脚本「比对 token 再删除」，防误删他人锁。
+- 续期：业务超时需看门狗（Redisson）自动续期。
+- 其它：可重入、可重试、主从切换时锁丢失风险（RedLock 或 ZK/etcd 增强）。
+
+=== 7. Kafka 为什么吞吐高？如何保证消息不丢/不重复？
+
+- 吞吐高：顺序写磁盘、页缓存、零拷贝（sendfile）、批量+压缩、分区并行。
+- 不丢：`acks=all` + 足够副本 + 幂等（`enable.idempotence`）+ 消费端处理成功再提交位移。
+- 不重复：本身至少一次，靠业务幂等（唯一键、状态表）去重。
+
+=== 8. RocketMQ 事务消息原理？延迟消息如何实现？
+
+- 事务消息：发半消息（不可见）→ 执行本地事务 → 回执 commit/rollback；未回执时 Broker 定时回查本地事务状态，最终确定投递。
+- 延迟消息：Broker 内置 18 个延迟级别（如 1s/5s/10s/30s/1m...），消息先存延迟队列，到时间再投递。
+
+=== 9. 消息顺序消费如何保证？
+
+- 生产端：同一业务 key 路由到同一分区/队列（`MessageQueueSelector`）。
+- 消费端：分区内天然有序，消费端单线程处理或加锁，保证局部有序。
+- 强调：是「局部有序」而非全局有序。
+
+=== 10. ZooKeeper 如何实现分布式锁与选主？
+
+- 分布式锁：创建临时顺序节点，序号最小者获得锁，其余监听前一个节点，释放/会话断开则自动删除并唤醒后继。
+- 选主：同样用临时顺序节点，最小序号当选；或利用 leader 选举 API（如 Curator `LeaderLatch`）。
+
+=== 11. ES 的倒排索引与写入流程？
+
+- 倒排索引：分词后建立「词项 → 文档 ID 列表」映射，配合词频/位置信息，实现快速全文检索。
+- 写入流程：写入内存 buffer + translog（WAL）→ refresh（1s）生成 segment 可搜索 → 定期 flush 落盘 Lucene segment，后台段合并。
+
+=== 12. Netty 的线程模型与零拷贝？
+
+- 线程模型：主从 Reactor，BossGroup 处理连接、WorkerGroup 处理读写，一个 EventLoop 绑定一个线程循环处理多个 Channel。
+- 零拷贝：`CompositeByteBuf` 合并、`FileRegion.transferTo`（sendfile）、直接内存避免堆拷贝。
+
+=== 13. Kafka 与 RocketMQ 如何选型？
+
+- 大数据/日志/流式、超高吞吐 → Kafka。
+- 金融级事务消息、顺序/延迟消息、Java 生态业务消息 → RocketMQ。
+- 通用企业、灵活路由、低延迟小流量 → RabbitMQ。
+
+=== 14. 如何设计一个消息队列？
+
+- 存储：顺序写日志（CommitLog）+ 索引（分区/队列）。
+- 路由：NameServer/元数据 + 分区 hash 路由。
+- 可靠性：持久化 + 副本 + 生产确认 + 消费确认。
+- 高可用：主从复制 + 自动故障转移。
+- 功能：顺序、延迟、事务、重试、死信、幂等。
+- 性能：批量、压缩、零拷贝、异步刷盘。

@@ -1,0 +1,236 @@
+= Java 基础面试手册
+:doctype: article
+:toc: left
+:toclevels: 3
+:sectnums:
+:sectnumlevels: 3
+:source-highlighter: highlight.js
+:toc-title: 目录
+
+本手册面向 Java 后端面试的「基础」部分，覆盖语法特性、面向对象、核心类库与 JVM 入门。建议配合真题练习。
+
+== 语言基础
+
+=== 基本数据类型与包装类
+
+Java 有 8 种基本数据类型：`byte`(1) / `short`(2) / `int`(4) / `long`(8) / `float`(4) / `double`(8) / `char`(2) / `boolean`(1 位)。
+
+- 包装类：`Byte/Short/Integer/Long/Float/Double/Character/Boolean`。
+- 装箱与拆箱：基本类型与包装类之间自动转换，本质是编译器调用 `valueOf()` 与 `xxxValue()`。
+- 缓存：`Integer` 默认缓存 `-128~127`（`IntegerCache`），`Boolean/Byte/Short/Character` 全量缓存，`Long` 缓存 `-128~127`。故 `Integer.valueOf(100) == Integer.valueOf(100)` 为 `true`，`new Integer(100)` 则不同。
+- 比较：包装类之间比较用 `equals`，与基本类型用 `==` 时自动拆箱，注意 `null` 拆箱会 NPE。
+
+.常见陷阱
+[source,java]
+----
+Integer a = 200, b = 200;
+a == b;          // false（超出缓存范围）
+Integer c = 100, d = 100;
+c == d;          // true（命中缓存）
+Integer e = null;
+int f = e;       // 拆箱抛 NullPointerException
+----
+
+=== == 与 equals / hashCode
+
+- `==`：基本类型比「值」，引用类型比「地址」。
+- `equals`：`Object` 默认实现就是 `==`，子类（如 `String`、集合）重写为比「内容」。
+- 契约：重写 `equals` 必须同时重写 `hashCode`——相等对象 `hashCode` 必相等；反之 `hashCode` 相等不代表对象相等。
+- 经典应用：`HashMap` 先按 `hashCode` 定位桶，再按 `equals` 判等。
+
+=== String / StringBuilder / StringBuffer
+
+- `String` 不可变（`final char[]/byte[]`），每次拼接产生新对象。
+- `StringBuilder` 可变、线程不安全、性能好。
+- `StringBuffer` 可变、方法 `synchronized`、线程安全、性能差。
+- `+` 拼接在编译期/运行期会优化为 `StringBuilder`（常量拼接直接常量折叠），循环内拼接应显式用 `StringBuilder`。
+- 常量池：字面量进入运行时常量池，`String.intern()` 可将对象放入常量池并返回引用。
+
+=== 值传递还是引用传递
+
+Java 只有「值传递」：基本类型传值副本，引用类型传「引用地址的副本」。因此方法内修改引用指向的「对象内容」会生效，但修改引用「指向」本身不会影响外部。
+
+[source,java]
+----
+void change(Person p) {
+    p.setName("B");   // 生效：改了对象内容
+    p = new Person(); // 无效：改了副本引用
+}
+----
+
+== 面向对象
+
+=== 三大特性
+
+- *封装*：隐藏内部实现，通过访问控制（`private/protected/public/default`）暴露接口。
+- *继承*：子类复用父类，`extends` 单继承，接口 `implements` 多实现。
+- *多态*：父类引用指向子类对象，运行时动态绑定方法（虚方法分派），接口与实现解耦的基础。
+
+=== 重写（Override）与重载（Overload）
+
+- 重写：子类重定义父类方法，方法签名相同，返回类型可为子类型（协变返回），访问权限不能更窄，异常不能更宽；`@Override` 校验。
+- 重载：同类中方法名相同、参数列表不同，与返回类型无关，编译期决定。
+
+=== 接口与抽象类
+
+[cols="1,1"]
+|===
+| 对比项 | 接口 | 抽象类
+| 关键字 | `interface` | `abstract class`
+| 继承 | 可实现多个 | 只能单继承
+| 方法 | 默认 public abstract（可 default/static/private） | 可有抽象与具体方法
+| 字段 | 仅 `public static final` 常量 | 可有实例变量
+| 构造器 | 无 | 有
+| 定位 | 定义能力/契约（has-a） | 抽取共性（is-a）
+|===
+
+=== 关键字与修饰符
+
+- `final`：修饰类不可继承、方法不可重写、变量不可变（引用不可变，对象内容可变）。
+- `static`：类级别共享，随类加载初始化，方法内不能访问实例成员。
+- `transient`：字段不参与序列化。
+- `volatile`：保证可见性与禁止重排序，不保证原子性（详见进阶篇）。
+- `synchronized`：互斥锁，保证原子性/可见性/有序性（详见进阶篇）。
+
+== 异常体系
+
+=== 继承结构
+
+`Throwable` 分两支：
+
+- `Error`：JVM 级错误（`OutOfMemoryError`、`StackOverflowError`），通常不捕获。
+- `Exception`：分受检异常 `CheckedException`（编译期强制处理，如 `IOException`）与非受检 `RuntimeException`（如 `NullPointerException`、`IndexOutOfBoundsException`）。
+
+=== 异常处理原则
+
+- `try-catch-finally`：`finally` 必执行（`System.exit` 除外），`return` 在 `finally` 前求值。
+- 多个 `catch` 按顺序匹配，子类在前。
+- `try-with-resources`（JDK7+）：实现 `AutoCloseable` 的资源自动关闭，异常压制机制。
+- 捕获异常尽量具体，避免吞异常、避免 `catch (Exception e) {}` 空处理。
+
+[source,java]
+----
+try (BufferedReader br = Files.newBufferedReader(path)) {
+    return br.readLine();
+} // 自动 close
+----
+
+== 集合框架（速览，进阶详见集合专题）
+
+- `List`：`ArrayList`（数组，随机访问快）、`LinkedList`（链表，增删快）、`Vector`（线程安全已过时）。
+- `Set`：`HashSet`（哈希无序）、`LinkedHashSet`（保序）、`TreeSet`（红黑树有序）。
+- `Map`：`HashMap`（哈希）、`LinkedHashMap`（保序）、`TreeMap`（红黑树有序）、`ConcurrentHashMap`（并发安全）、`Hashtable`（过时）。
+- `Queue`：`PriorityQueue`（堆）、`ArrayDeque`（双端队列）、`LinkedList` 亦可作队列。
+
+=== 快速选择记忆点
+
+- `HashMap` 默认容量 16、负载因子 0.75、JDK8 后链表转红黑树（长度 ≥ 8 且桶 ≥ 64）。
+- `ConcurrentHashMap`：JDK7 分段锁 `Segment`，JDK8 改为 `CAS + synchronized` 锁单个桶节点。
+- `ArrayList` 扩容约 1.5 倍，`HashMap` 扩容 2 倍。
+
+== 常用类库与 I/O
+
+=== 泛型
+
+- 编译期类型检查，运行时类型擦除。
+- `? extends T`（上界，只读）、`? super T`（下界，只写）、`?` 无界通配。
+- PECS 原则：Producer Extends，Consumer Super。
+
+=== 反射
+
+- 运行时获取类信息：`Class.forName()`、`getDeclaredMethods/Fields/Constructors`。
+- 动态创建对象、调用方法、访问私有字段（`setAccessible(true)`）。
+- 应用：Spring IoC、JDBC 动态代理、序列化框架。
+
+=== 动态代理
+
+- JDK 动态代理：基于接口，`Proxy.newProxyInstance` + `InvocationHandler`。
+- CGLIB：基于继承，字节码生成子类，可代理普通类。
+- Spring AOP 默认 JDK 代理（有接口时），否则 CGLIB。
+
+=== BIO / NIO / AIO
+
+- BIO：阻塞 I/O，一线程一连接，`InputStream/OutputStream`。
+- NIO：非阻塞，`Channel + Buffer + Selector` 多路复用，单线程管理多连接。
+- AIO：异步 I/O，回调通知（Java 异步网络编程，实际使用较少）。
+- Netty 基于 NIO 封装，是高性能网络框架事实标准（见中间件篇）。
+
+== JVM 入门（深入见进阶篇）
+
+- 内存区域：堆（对象）、虚拟机栈（栈帧/局部变量）、方法区（元空间/常量池）、程序计数器、本地方法栈。
+- 垃圾回收：判断可达性（GC Roots），算法有标记-清除、标记-复制、标记-整理；常见收集器 `Serial/Parallel/CMS/G1/ZGC`。
+- 类加载：加载→验证→准备→解析→初始化；双亲委派模型。
+
+== 高频真题与参考答案
+
+=== 1. String 为什么设计成不可变？
+
+- *实现*：`String` 是 `final` 类，内部用 `final` 字符数组（JDK9 起为 `byte[]`），且不提供任何修改内容的方法，所有「修改」都返回新对象。
+- *原因*：
+  1. 线程安全：不可变对象天然线程安全，可被多线程共享。
+  2. 常量池复用：字符串常量池可安全复用同一实例，节省内存。
+  3. 可作 `HashMap/HashSet` 的 key：hash 值稳定（`hashCode` 可缓存）。
+  4. 安全性：防止被篡改（类名、文件路径、网络参数、反射等依赖字符串的场景）。
+
+=== 2. HashMap 的 put/get 流程与哈希冲突如何解决？
+
+- *结构*：数组（桶）+ 链表 + 红黑树（JDK8）。
+- *put 流程*：
+  1. 计算扰动后的 hash：`(h = key.hashCode()) ^ (h >>> 16)`。
+  2. `(n-1) & hash` 定位桶下标。
+  3. 桶为空则直接放入；非空则沿链表/红黑树比较（先比 hash，再比 `equals`）。
+  4. key 相同则覆盖 value；否则尾插链表，链表长度 ≥ 8 且桶数 ≥ 64 转红黑树。
+  5. 超过阈值触发 `resize` 扩容。
+- *get 流程*：同样定位桶，再遍历链表或红黑树查找。
+- *哈希冲突*：链地址法（链表+红黑树），配合扰动函数让哈希分布更均匀，减少碰撞。
+
+=== 3. ArrayList 与 LinkedList 的区别与适用场景？
+
+- *ArrayList*：底层 `Object[]` 数组，随机访问 O(1)，末尾增删均摊 O(1)，中间插入/删除 O(n)（需 `System.arraycopy` 搬迁）。
+- *LinkedList*：双向链表，随机访问 O(n)，头尾增删 O(1)，节点额外存前驱/后继指针、内存开销大。
+- *选型*：读多写少用 `ArrayList`（实际业务绝大多数场景）；仅在频繁头尾增删且很少随机访问时才考虑 `LinkedList`。
+
+=== 4. equals 与 == 的区别？重写 equals 为何要重写 hashCode？
+
+- `==`：基本类型比较「值」，引用类型比较「引用地址」。
+- `equals`：`Object` 默认实现就是 `==`，`String`/包装类/集合重写为比较「内容」。
+- *为何同重写 hashCode*：二者有契约——`equals` 相等的对象 `hashCode` 必须相等。`HashMap/HashSet` 先按 `hashCode` 定位桶，再按 `equals` 判等；若只重写 `equals` 不重写 `hashCode`，两个逻辑相等的对象 hash 不同、落在不同桶，导致无法命中、集合出现「重复」元素。
+
+=== 5. 异常体系有哪些？finally 在 return 前还是后执行？
+
+- `Throwable` → `Error`（JVM 错误，不捕获）+ `Exception`。
+- `Exception` → 受检异常 `CheckedException`（编译期强制处理）+ 非受检 `RuntimeException`。
+- *finally 时机*：`finally` 在 `return` 表达式「求值之后、真正返回之前」执行；`finally` 里的 `return` 会覆盖 `try` 的 `return`；`finally` 抛异常会覆盖原异常；除 `System.exit()` 或 JVM 崩溃外 `finally` 必执行。
+
+=== 6. 抽象类和接口如何选择？
+
+- *用抽象类*：存在明显的 is-a 继承关系、需共享实例字段/构造器/非 public 方法或状态时。
+- *用接口*：定义能力/契约（has-a）、需要多实现、解耦模块时；JDK8+ 支持 `default` 方法。
+- *原则*：优先接口、组合优于继承；抽象类用于抽取模板方法。
+
+=== 7. 什么是值传递？Java 参数传递机制是什么？
+
+- Java 只有*值传递*，无引用传递。
+- 基本类型：传「值副本」，方法内修改不影响外部。
+- 引用类型：传「引用地址的副本」，通过副本可修改指向的*对象内容*（会生效）；但让副本重新指向新对象（`p = new Person()`）不影响外部引用。
+
+=== 8. final、finally、finalize 的区别？
+
+- `final`：关键字，修饰类（不可继承）、方法（不可重写）、变量（不可变）。
+- `finally`：异常处理块，保证资源释放/收尾，必执行。
+- `finalize()`：`Object` 方法，GC 回收前可能被调用，JDK9 已废弃、不可靠，绝不用它做资源清理。
+
+=== 9. 谈谈反射与动态代理的原理与应用。
+
+- *反射*：运行时获取类的元信息（`Class.forName()`、`getDeclaredMethods/Fields/Constructors`）、动态创建对象、调用方法、访问私有成员（`setAccessible(true)`）。应用：Spring IoC 注入、ORM、序列化。
+- *动态代理*：
+  - JDK 代理：基于接口，`Proxy.newProxyInstance` + `InvocationHandler`，代理类实现目标接口。
+  - CGLIB：基于继承，运行时生成子类，可代理无接口的类。
+  - 应用：Spring AOP、RPC 框架、事务/日志/权限切面。
+
+=== 10. BIO、NIO、AIO 的区别？为什么 Netty 用 NIO？
+
+- *BIO*：阻塞 I/O，一个连接一个线程，`InputStream/OutputStream`，连接多时线程开销大。
+- *NIO*：非阻塞，`Channel + Buffer + Selector` 多路复用，单线程可管理大量连接。
+- *AIO*：异步 I/O，回调/`Future` 通知完成。
+- *Netty 选 NIO*：NIO 非阻塞 + 多路复用，高并发下资源消耗低；BIO 线程模型无法支撑海量连接；AIO 在 Linux 上底层用 epoll 模拟、成熟度与可维护性不如 NIO。

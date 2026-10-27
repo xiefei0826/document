@@ -1,0 +1,286 @@
+= Java 进阶面试手册（JVM / 并发 / 集合）
+:doctype: article
+:toc: left
+:toclevels: 3
+:sectnums:
+:sectnumlevels: 3
+:source-highlighter: highlight.js
+:toc-title: 目录
+
+进阶篇聚焦 JVM 内存与 GC、并发编程、集合源码，是区分中级与高级候选人的核心区。
+
+== JVM 内存模型
+
+=== 运行时数据区
+
+- *堆 Heap*：对象与数组，GC 主要区域；分新生代（Eden + 2 个 Survivor）与老年代。
+- *虚拟机栈*：线程私有，栈帧含局部变量表、操作数栈、动态链接、返回地址；方法调用压栈，返回弹栈。
+- *本地方法栈*：native 方法。
+- *程序计数器*：线程私有，记录当前字节码位置，唯一不 OOM 的区域。
+- *方法区*：JDK8 由永久代改为*元空间 Metaspace*（本地内存），存类信息、常量、静态变量、JIT 代码。
+- *运行时常量池*：类加载后常量池；`String` 常量池 JDK7 移入堆。
+
+=== 对象创建过程
+
+1. 类加载检查 → 2. 分配内存（指针碰撞/空闲列表）→ 3. 初始化零值 → 4. 设置对象头 → 5. 执行 `<init>`。
+- 分配内存并发安全：CAS + 失败重试（TLAB 线程本地分配缓冲优先）。
+
+=== 对象内存布局
+
+- *对象头*：Mark Word（哈希、GC 分代年龄、锁标志）+ 类型指针（Klass Pointer）+ 数组长度（数组对象）。
+- *实例数据* + *对齐填充*（8 字节对齐）。
+
+== 垃圾回收
+
+=== 对象存活判定
+
+- 引用计数法：有循环引用问题，JVM 未采用。
+- 可达性分析：从 GC Roots（栈引用、静态变量、常量、JNI 引用）出发，不可达对象可回收。
+
+=== 引用类型
+
+- 强引用（`new`）、软引用（`SoftReference`，内存不足才回收）、弱引用（`WeakReference`，下次 GC 必回收）、虚引用（`PhantomReference`，仅用于回收跟踪）。
+
+=== 垃圾回收算法
+
+- *标记-清除*：产生碎片。
+- *标记-复制*：新生代，两块 Survivor 交替，浪费一半空间，对象存活率低时高效。
+- *标记-整理*：老年代，存活率高，移动对象避免碎片。
+
+=== 分代收集与收集器
+
+[cols="1,3"]
+|===
+| 收集器 | 说明
+| Serial | 单线程，客户端/小堆适用，STW
+| ParNew | Serial 多线程版，配合 CMS
+| Parallel Scavenge | 吞吐量优先，JDK8 默认新生代
+| CMS | 老年代，标记-清除，低停顿但产生碎片、有并发失败
+| G1 | 分区 Region，可预测停顿，JDK9 默认
+| ZGC | 低延迟（<10ms 目标），大堆，分代/染色指针
+|===
+
+=== 分代年龄与晋升
+
+- 对象先在 Eden，Minor GC 后存活进入 Survivor，年龄 +1；达到阈值（默认 15）晋升老年代。
+- 大对象直接进老年代（可配 `PretenureSizeThreshold`）；Survivor 空间不足直接晋升。
+
+=== 触发时机
+
+- Minor GC：新生代满。
+- Full GC：老年代满、元空间满、`System.gc()`、晋升失败、CMS 并发失败等。
+
+== 类加载机制
+
+=== 加载过程
+
+加载 → 验证 → 准备（静态变量分配内存并赋默认值）→ 解析（符号引用转直接引用）→ 初始化（执行 `<clinit>`，静态变量赋初值）。
+
+=== 双亲委派模型
+
+- 加载顺序：启动类加载器（Bootstrap）→ 扩展类加载器（Ext/Platform）→ 应用类加载器（App）→ 自定义。
+- 委派：先向上委派，父加载器能加载则父加载，否则子加载，避免核心类被篡改。
+- 打破：Tomcat（各 WebApp 隔离）、JDBC SPI（线程上下文类加载器 `Thread.currentThread().getContextClassLoader()`）、热部署。
+
+=== 类初始化时机（主动引用）
+
+- `new`、反射、初始化子类先初始化父类、`main` 类、`MethodHandle` 等。
+- 被动引用不触发：子类引用父类静态字段、数组定义、常量（编译期入常量池）。
+
+== 并发编程
+
+=== 线程基础
+
+- 创建方式：继承 `Thread`、实现 `Runnable`、`Callable + FutureTask`、线程池。
+- 状态：NEW → RUNNABLE → BLOCKED / WAITING / TIMED_WAITING → TERMINATED。
+- `start()` 启动新线程，`run()` 只是普通方法调用。
+- `join()` 等待线程结束；`yield()` 让出 CPU；`sleep()` 不释放锁，`wait()` 释放锁。
+
+=== 线程安全三大特性
+
+- *原子性*：操作不可分割。`synchronized`、`Lock`、`Atomic` 类保证。
+- *可见性*：一个线程修改对其它线程立即可见。`volatile`、`synchronized`、`Lock` 保证。
+- *有序性*：`volatile`、`synchronized`、`happens-before` 规则。
+
+=== volatile
+
+- 保证可见性：写操作强制刷回主内存，读从主内存读。
+- 禁止指令重排序：内存屏障。
+- *不保证原子性*：`i++` 读改写三步仍非原子。
+- 适用：状态标志位、双重检查锁单例的 `instance` 字段。
+
+=== synchronized
+
+- 修饰代码块/方法；锁对象为 `this`（实例方法）、`Class`（静态方法）或指定对象。
+- JDK6 后优化：偏向锁 → 轻量级锁（CAS 自旋）→ 重量级锁（Monitor），锁升级。
+- `Monitor`：`ObjectMonitor`，基于 `monitorenter/monitorexit`，含入口队列与等待队列。
+- 可重入、非公平；`wait/notify/notifyAll` 必须持有锁，且 `notifyAll` 防丢失唤醒。
+
+=== Lock 与 AQS
+
+- `Lock` 接口：`lock()/unlock()/tryLock()/lockInterruptibly()`；典型 `ReentrantLock`（可重入、可公平、可中断、可超时）。
+- *AQS*（`AbstractQueuedSynchronizer`）：基于 `volatile int state` + CLH 双向队列，`ReentrantLock/ReentrantReadWriteLock/CountDownLatch/Semaphore` 均基于它。
+- 公平锁：按队列顺序获取；非公平锁：先 CAS 抢占。
+
+=== CAS 与原子类
+
+- CAS（Compare And Swap）：比较并交换，`Unsafe` 提供硬件原子指令（cmpxchg）。
+- 问题：ABA（用 `AtomicStampedReference`/`AtomicMarkableReference` 加版本解决）、自旋 CPU 消耗、只能保证一个变量原子。
+- 原子类：`AtomicInteger/Long/Reference`、累加器 `LongAdder`（分段累加，高并发优于 AtomicLong）。
+
+=== ThreadLocal
+
+- 每个线程独立变量副本：`ThreadLocal` 内部用 `Thread.threadLocals`（`ThreadLocalMap`）。
+- key 是弱引用的 `ThreadLocal`，value 强引用 → 线程池场景易*内存泄漏*，用完必须 `remove()`。
+- 应用：数据库连接、事务、用户上下文传递。
+
+=== 线程池
+
+- 构造参数：核心线程数、最大线程数、存活时间、队列、线程工厂、拒绝策略。
+- 流程：核心线程 → 队列 → 最大线程 → 拒绝策略。
+- 队列：`LinkedBlockingQueue`（无界，需注意）、`ArrayBlockingQueue`、`SynchronousQueue`（直接移交，配合 `CachedThreadPool`）、`DelayedWorkQueue`（定时）。
+- 拒绝策略：`AbortPolicy`（抛异常）、`CallerRunsPolicy`（调用者执行）、`DiscardPolicy`（丢弃）、`DiscardOldestPolicy`（丢弃最旧）。
+- `Executors` 四类工厂的问题：`newFixedThreadPool/newSingleThreadExecutor` 用无界队列 OOM，`newCachedThreadPool` 线程数无上限 OOM → 推荐 `ThreadPoolExecutor` 显式参数。
+- 核心方法：`execute()` 提交 `Runnable`；`submit()` 返回 `Future` 可获取结果、异常在 `get()` 抛出。
+
+=== 并发工具类
+
+- `CountDownLatch`：一次性倒计时，等待 N 个任务完成。
+- `CyclicBarrier`：可循环屏障，N 个线程互相等待到齐。
+- `Semaphore`：信号量，控制并发访问数，限流。
+- `CompletableFuture`：异步编排，`thenApply/thenCompose/thenCombine/allOf/anyOf`，异常处理 `exceptionally`。
+
+=== 死锁
+
+- 四个必要条件：互斥、持有并等待、不可剥夺、循环等待。
+- 避免：破坏循环等待（按序加锁）、`tryLock` 超时、减少锁粒度、一次性获取所有锁。
+- 排查：`jstack` 分析线程状态，检测 BLOCKED 与锁持有关系。
+
+=== 锁优化与 synchronized 底层
+
+- 偏向锁：无竞争时偏向首个线程，记录线程 ID。
+- 轻量级锁：CAS 替换对象头 Mark Word 为锁记录指针，自旋等待。
+- 重量级锁：竞争激烈膨胀为 Monitor，线程阻塞进入等待队列。
+- 其它：锁消除（JIT 判断不可能共享）、锁粗化（相邻同步合并）、自旋锁。
+
+== 集合源码（深入）
+
+=== HashMap
+
+- JDK8 结构：数组 + 链表 + 红黑树。
+- `put`：`(n-1) & hash` 定位桶；`hash = (h ^ (h >>> 16))` 扰动；冲突链表尾插；链表长 ≥ 8 且桶数 ≥ 64 转红黑树；≤ 6 退化链表。
+- `resize`：容量 × 2，`rehash` 时高位 0 留在原位、1 移到「原位置 + 旧容量」。
+- 线程不安全：`resize` 环（JDK7 头插法）、数据覆盖、`size++` 丢失更新。
+
+=== ConcurrentHashMap
+
+- JDK7：`Segment` 分段锁（继承 `ReentrantLock`），并发度默认 16。
+- JDK8：`CAS + synchronized`，锁单个桶头节点；`size` 用 `LongAdder` 思想计数；红黑树扩容。
+- 不支持 null 键值；`get` 无锁（volatile 读）。
+
+=== ArrayList / LinkedList
+
+- `ArrayList`：`Object[]`，扩容 `oldCapacity + (oldCapacity >> 1)` 约 1.5 倍，`System.arraycopy` 拷贝。
+- `LinkedList`：双向链表，增删头尾 O(1)，随机访问 O(n)，非线程安全。
+
+=== HashSet / LinkedHashMap / TreeMap
+
+- `HashSet` 基于 `HashMap`，value 为 `PRESENT` 哨兵。
+- `LinkedHashMap`：维护双向链表保序；`accessOrder=true` 可实现 LRU（重写 `removeEldestEntry`）。
+- `TreeMap`：红黑树，key 需实现 `Comparable` 或传 `Comparator`，有序。
+
+== JVM 调优与排查
+
+- 常用参数：`-Xms/-Xmx`（堆初始/最大）、`-Xmn`（新生代）、`-XX:MetaspaceSize/-XX:MaxMetaspaceSize`、`-Xss`（栈）、`-XX:+UseG1GC`。
+- 工具：`jps`（进程）、`jstat`（GC 统计）、`jmap -heap/-histo/-dump`、`jstack`（线程）、`jinfo`（参数）、`jcmd`、`arthas`。
+- 思路：先看监控（GC 频率、停顿、内存曲线），再定位（dump 分析大对象、线程栈定位死锁/阻塞），后调参/改代码。
+
+== 高频真题与参考答案
+
+=== 1. 描述 JVM 运行时数据区，各区域作用与异常？
+
+- *堆*：对象与数组，GC 主战场，分新生代 + 老年代；溢出抛 `OutOfMemoryError: Java heap space`。
+- *虚拟机栈*：线程私有，栈帧存局部变量表/操作数栈/动态链接/返回地址；过深抛 `StackOverflowError`。
+- *本地方法栈*：native 方法。
+- *程序计数器*：线程私有，记录当前字节码位置，唯一不 OOM 区域。
+- *方法区*：JDK8 起为元空间（本地内存），存类信息/常量/静态变量；溢出抛 `OutOfMemoryError: Metaspace`。
+- *运行时常量池*：字符串常量池 JDK7 移入堆。
+
+=== 2. 判断对象是否存活的方式？四种引用区别？
+
+- *引用计数法*：有循环引用问题，JVM 未采用。
+- *可达性分析*：从 GC Roots 出发不可达即判定可回收。
+- *四种引用*：强引用（`new`，永不回收）、软引用（内存不足才回收，适合缓存）、弱引用（下次 GC 必回收）、虚引用（仅用于回收跟踪，需配合引用队列）。
+
+=== 3. 垃圾回收算法有哪些？分代收集如何设计？
+
+- 算法：标记-清除（有碎片）、标记-复制（新生代，两 Survivor 交替）、标记-整理（老年代，无碎片）。
+- 分代：新生代对象朝生夕死用「复制」，老年代存活率高用「标记-整理/清除」；Minor GC 存活对象年龄递增，达到阈值晋升老年代。
+
+=== 4. G1 与 CMS 的区别？为什么 G1 成为默认？
+
+- CMS：标记-清除，低停顿但有碎片、可能并发失败回退 Full GC、需多次 STW、参数复杂。
+- G1：将堆划分为等大 Region，按回收价值优先回收垃圾最多的分区（Garbage First），可预测停顿（`-XX:MaxGCPauseMillis`），标记-复制整体无碎片，支持大堆；JDK9 起默认。
+- 原因：CMS 已废弃（JDK9 标记、JDK14 移除），G1 兼顾吞吐与延迟且停顿可控。
+
+=== 5. 类加载过程与双亲委派模型？如何打破？
+
+- 过程：加载 → 验证 → 准备（静态变量赋默认值）→ 解析（符号引用转直接引用）→ 初始化（执行 `<clinit>`）。
+- 双亲委派：类加载器先委派父加载器，父能加载则父加载，否则子加载；防止核心类被篡改。
+- 打破：Tomcat 各 WebApp 隔离、JDBC SPI（线程上下文类加载器）、OSGi、热部署。
+
+=== 6. synchronized 底层如何实现？锁升级过程？
+
+- 底层：基于对象头 Mark Word + Monitor，字节码 `monitorenter/monitorexit`。
+- 锁升级：偏向锁（无竞争，记录线程 ID）→ 轻量级锁（CAS 自旋）→ 重量级锁（膨胀为 Monitor，线程阻塞）。竞争激烈则膨胀，不降级。
+- 优化：锁消除、锁粗化、自旋锁。
+
+=== 7. volatile 与 synchronized 的区别？
+
+- `volatile`：仅保证*可见性*与*有序性*（禁止重排序），不保证原子性；轻量，不能保证复合操作（`i++`）安全。
+- `synchronized`：保证*原子性 + 可见性 + 有序性*，重量级，会阻塞线程、开销更大。
+- 适用：`volatile` 用于状态标志/双重检查锁；`synchronized` 用于需要互斥的临界区。
+
+=== 8. AQS 的原理？ReentrantLock 如何实现？
+
+- AQS（`AbstractQueuedSynchronizer`）：用 `volatile int state` 表示锁状态 + 一个 CLH 双向队列管理等待线程；`tryAcquire/tryRelease` 由子类实现，入队/唤醒由 AQS 完成。
+- `ReentrantLock`：`Sync` 继承 AQS，`state=0` 未加锁，加锁 CAS 置 1 并记录持有线程（可重入则 state 累加），失败则入队阻塞；解锁递减 state，为 0 时唤醒后继。
+
+=== 9. ThreadLocal 内存泄漏原因与解决方案？
+
+- 结构：`Thread.threadLocals` 是 `ThreadLocalMap`，key 是弱引用 `ThreadLocal`，value 强引用。
+- 泄漏原因：`ThreadLocal` 被 GC 后 key 变 null，但 value 仍被线程强引用，线程池线程长期存活导致 value 无法回收。
+- 解决：用完必须 `remove()`；JDK 在 `set/get` 时会清理 key 为 null 的脏 entry。
+
+=== 10. 线程池参数与工作流程？如何合理设置线程数？
+
+- 参数：核心线程数、最大线程数、存活时间、工作队列、线程工厂、拒绝策略。
+- 流程：任务先核心线程 → 满则入队列 → 队列满则开新线程到最大数 → 仍满走拒绝策略。
+- 线程数：CPU 密集型 `N+1`；IO 密集型 `2N`（或按 `N * (1 + 等待/计算时间比)`），需实测调优；显式 `ThreadPoolExecutor` 而非 `Executors`。
+
+=== 11. HashMap 底层结构与扩容机制？为什么线程不安全？
+
+- 结构：数组 + 链表 + 红黑树。
+- 扩容：容量 ×2，`(n-1)&hash` 重定位，高位 0 留原位、1 移「原下标 + 旧容量」。
+- 不安全：JDK7 头插法扩容可能成环（死循环）、数据覆盖、`size++` 丢失更新；JDK8 仍存在并发写覆盖。
+
+=== 12. ConcurrentHashMap JDK7 与 JDK8 实现差异？
+
+- JDK7：`Segment` 分段锁（继承 `ReentrantLock`），默认 16 段，锁粒度大。
+- JDK8：`CAS + synchronized` 锁单个桶头节点，粒度更细；链表过长转红黑树；计数用类似 `LongAdder` 的分段累加；`get` 无锁 volatile 读。
+
+=== 13. 什么是 CAS？ABA 问题如何解决？
+
+- CAS（Compare And Swap）：比较当前值等于预期值则原子替换，否则失败，底层 `Unsafe` + CPU `cmpxchg`。
+- 问题：ABA（值 A→B→A 无法察觉）、自旋 CPU 开销、只能保证单变量原子。
+- 解决 ABA：加版本号，`AtomicStampedReference`/`AtomicMarkableReference`。
+
+=== 14. CompletableFuture 如何做异步编排？
+
+- 核心方法：`thenApply`（有返回值）、`thenAccept`/`thenRun`、`thenCompose`（组合依赖）、`thenCombine`（并行合并）、`allOf`/`anyOf`（多任务聚合）、`exceptionally`/`handle`（异常处理）。
+- 场景：串行依赖用 `thenCompose`，并行无依赖用 `thenCombine`，多任务等待用 `allOf`。
+
+=== 15. 线上 CPU 飙高 / OOM 如何排查？
+
+- *CPU 飙高*：`top` 找到高 CPU 进程 → `top -Hp <pid>` 找高 CPU 线程 → `printf '%x'` 转十六进制 → `jstack <pid>` 找对应 nid 的线程栈，定位死循环/频繁 GC/锁竞争。
+- *OOM*：加 `-XX:+HeapDumpOnOutOfMemoryError` 保留现场 → `jmap -dump` 或 MAT/JProfiler 分析 dump，看大对象、类数量、GC Roots 引用链 → 定位内存泄漏或参数配置不当。
