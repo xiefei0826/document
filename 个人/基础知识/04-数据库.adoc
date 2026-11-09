@@ -32,6 +32,277 @@
 | 场景 | 默认、在线事务 | 只读/低并发
 |===
 
+== 常用 SQL 语句
+
+以下示例以 MySQL 8.0 为主，窗口函数、CTE 需 8.0+；字符集统一用 `utf8mb4`。
+
+=== DDL 数据定义
+
+[source,sql]
+----
+CREATE DATABASE IF NOT EXISTS demo
+  DEFAULT CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE t_user (
+  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键',
+  username    VARCHAR(64)  NOT NULL COMMENT '用户名',
+  age         TINYINT      NOT NULL DEFAULT 0,
+  status      TINYINT      NOT NULL DEFAULT 1,
+  created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_username (username),
+  KEY idx_status_created (status, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户表';
+
+ALTER TABLE t_user ADD COLUMN email VARCHAR(128) NULL AFTER username;
+ALTER TABLE t_user MODIFY COLUMN age SMALLINT NOT NULL DEFAULT 0;
+ALTER TABLE t_user DROP COLUMN email;
+ALTER TABLE t_user ADD INDEX idx_age (age);
+RENAME TABLE t_user TO t_user_new;
+TRUNCATE TABLE t_user_new;   -- 清空并重置自增，DDL 不可回滚
+DROP TABLE IF EXISTS t_user_new;
+----
+
+- DDL 会隐式提交事务，不可 `ROLLBACK`；大表变更用 `gh-ost` / `pt-osc` 在线执行。
+- `TRUNCATE` 比 `DELETE` 快但不写 binlog 行级日志、不触发触发器、不可回滚。
+
+=== DML 数据操作
+
+[source,sql]
+----
+INSERT INTO t_user (username, age) VALUES ('alice', 18), ('bob', 20);
+INSERT INTO t_user (username, age)
+  SELECT username, age FROM t_user_bak WHERE status = 1;
+
+-- 主键/唯一键冲突则更新（UPSERT）
+INSERT INTO t_user (id, username, age) VALUES (1, 'alice', 20)
+  ON DUPLICATE KEY UPDATE age = VALUES(age), updated_at = NOW();
+
+REPLACE INTO t_user (id, username) VALUES (1, 'alice');  -- 冲突先删再插，慎用
+
+UPDATE t_user SET age = age + 1, status = 2 WHERE id = 1;
+DELETE FROM t_user WHERE status = 0 AND created_at < '2025-01-01';
+----
+
+- `UPDATE` / `DELETE` 务必带 `WHERE` 且命中索引，否则全表扫描并锁大量行。
+- 大批量删改分批执行（如每批 1000 条），避免大事务与主从延迟。
+
+=== 基础查询
+
+[source,sql]
+----
+SELECT id, username, age FROM t_user
+WHERE status = 1 AND age BETWEEN 18 AND 30;
+
+SELECT DISTINCT status FROM t_user;
+SELECT * FROM t_user WHERE username LIKE 'a%' ORDER BY created_at DESC LIMIT 10 OFFSET 20;
+SELECT * FROM t_user WHERE id IN (1,2,3) AND deleted = 0;
+SELECT * FROM t_user WHERE email IS NULL;
+SELECT u.id, u.username AS name FROM t_user u WHERE u.age >= 18;
+----
+
+- 避免 `SELECT *`（无法走覆盖索引、网络开销大）；`LIKE '%xx'` 前导通配不走索引。
+- 判断 `NULL` 用 `IS NULL` / `IS NOT NULL`，`= NULL` 永远为假。
+- 注意隐式类型转换（字符串列传数字会导致索引失效）。
+
+=== 聚合与分组
+
+[source,sql]
+----
+SELECT COUNT(*) AS cnt, COUNT(DISTINCT username) AS uniq,
+       SUM(amount) AS total, AVG(amount) AS avg_amt, MAX(amount), MIN(amount)
+FROM t_order WHERE status = 'PAID';
+
+SELECT status, COUNT(*) AS cnt
+FROM t_order
+GROUP BY status
+HAVING COUNT(*) > 10
+ORDER BY cnt DESC;
+----
+
+- `WHERE` 在分组前过滤行，`HAVING` 在分组后过滤组。
+- `COUNT(*)` 统计行数，`COUNT(col)` 不计 `NULL`；`GROUP BY` 后 `SELECT` 列必须是分组列或聚合结果。
+- 分组/排序字段有索引可避免 `Using temporary` / `Using filesort`。
+
+=== 连接查询
+
+[source,sql]
+----
+-- 内连接：只保留两表都匹配的行
+SELECT u.id, u.username, o.order_no
+FROM t_user u INNER JOIN t_order o ON o.user_id = u.id;
+
+-- 左连接：保留左表全部，右表无匹配补 NULL
+SELECT u.id, o.order_no FROM t_user u LEFT JOIN t_order o ON o.user_id = u.id;
+
+-- 找「没有订单的用户」
+SELECT u.id FROM t_user u LEFT JOIN t_order o ON o.user_id = u.id WHERE o.id IS NULL;
+
+-- 自连接（查上下级）
+SELECT e.name, m.name AS manager FROM emp e LEFT JOIN emp m ON e.manager_id = m.id;
+
+-- 结果集合并
+SELECT id FROM a UNION     SELECT id FROM b;   -- 去重
+SELECT id FROM a UNION ALL SELECT id FROM b;   -- 不去重，性能更好
+----
+
+- `JOIN` 字段必须建索引；优化器通常小表驱动大表（`EXPLAIN` 可看驱动顺序）。
+- `LEFT JOIN` 中，右表的过滤条件放 `ON` 还是 `WHERE` 结果不同：放 `WHERE` 会把未匹配的行也过滤掉，等价于内连接。
+- 能用 `UNION ALL` 就不用 `UNION`，省去去重排序。
+
+=== 子查询与 CTE
+
+[source,sql]
+----
+SELECT * FROM t_user WHERE id IN (SELECT user_id FROM t_order WHERE amount > 100);
+SELECT * FROM t_user u WHERE EXISTS (SELECT 1 FROM t_order o WHERE o.user_id = u.id);
+
+-- CTE：把中间结果命名，复杂查询更清晰
+WITH dept_stat AS (
+  SELECT dept_id, COUNT(*) AS cnt FROM emp GROUP BY dept_id
+)
+SELECT d.name, s.cnt FROM dept d JOIN dept_stat s ON s.dept_id = d.id;
+
+-- 递归 CTE：查树形/层级结构
+WITH RECURSIVE cte AS (
+  SELECT id, parent_id, name, 1 AS lvl FROM category WHERE parent_id IS NULL
+  UNION ALL
+  SELECT c.id, c.parent_id, c.name, t.lvl + 1
+  FROM category c JOIN cte t ON c.parent_id = t.id
+)
+SELECT * FROM cte;
+----
+
+- 子查询结果集大时优先改写为 `JOIN` 或 `EXISTS`；`IN` 里的常量列表不宜过长。
+- 派生表（FROM 后的子查询）必须起别名；CTE / 递归 CTE 需 MySQL 8.0+。
+
+=== 常用函数
+
+[source,sql]
+----
+-- 字符串
+SELECT CONCAT(username, '@x.com'), LENGTH(username), SUBSTRING(username,1,3),
+       REPLACE(username,'a','A'),
+       GROUP_CONCAT(DISTINCT username ORDER BY username SEPARATOR ',')
+FROM t_user GROUP BY status;
+
+-- 日期
+SELECT NOW(), CURDATE(), DATE_FORMAT(created_at,'%Y-%m-%d') AS d,
+       DATEDIFF(NOW(), created_at) AS days, DATE_ADD(NOW(), INTERVAL 7 DAY);
+
+-- 数值与条件
+SELECT ROUND(amount,2), CEIL(amount), FLOOR(amount), ABS(-1) FROM t_order;
+SELECT IF(status=1,'正常','禁用') AS status_txt,
+       IFNULL(email,'-') AS email2,
+       COALESCE(email, phone, 'N/A') AS contact,
+       CASE WHEN age < 18 THEN '未成年'
+            WHEN age < 60 THEN '成年'
+            ELSE '老年' END AS age_group
+FROM t_user;
+----
+
+- 对索引列套函数（如 `DATE_FORMAT(created_at,...)`）会导致索引失效，应改写成范围条件。
+- `GROUP_CONCAT` 有长度限制（`group_concat_max_len`），大数据量需调整或业务层拼接。
+
+=== 窗口函数（MySQL 8.0+）
+
+[source,sql]
+----
+SELECT dept_id, name, salary,
+       ROW_NUMBER() OVER (PARTITION BY dept_id ORDER BY salary DESC) AS rn,
+       RANK()       OVER (PARTITION BY dept_id ORDER BY salary DESC) AS rk,
+       DENSE_RANK() OVER (PARTITION BY dept_id ORDER BY salary DESC) AS dr
+FROM emp;
+
+-- 分组取 TopN：每个部门薪资最高的人
+SELECT * FROM (
+  SELECT e.*, ROW_NUMBER() OVER (PARTITION BY dept_id ORDER BY salary DESC) AS rn FROM emp e
+) t WHERE t.rn = 1;
+
+-- 累计值与前后行
+SELECT order_date, amount,
+       SUM(amount) OVER (ORDER BY order_date) AS running_total,
+       LAG(amount,1)  OVER (ORDER BY order_date) AS prev_amount,
+       LEAD(amount,1) OVER (ORDER BY order_date) AS next_amount
+FROM t_order;
+----
+
+- 窗口函数「不合并行」：每行都保留，同时能拿到分组内的排名/累计值；普通 `GROUP BY` 会聚合成一行。
+- 排名区别：`ROW_NUMBER` 不并列、`RANK` 并列跳号（1,1,3）、`DENSE_RANK` 并列不跳号（1,1,2）。
+- 窗口函数不能出现在 `WHERE` 中，需包一层子查询过滤。
+
+=== 事务控制
+
+[source,sql]
+----
+START TRANSACTION;    -- 或 BEGIN
+UPDATE account SET balance = balance - 100 WHERE id = 1;
+UPDATE account SET balance = balance + 100 WHERE id = 2;
+COMMIT;               -- 出错则 ROLLBACK;
+
+SAVEPOINT sp1;
+ROLLBACK TO SAVEPOINT sp1;
+
+SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED;
+SELECT @@transaction_isolation;
+
+SELECT * FROM account WHERE id = 1 FOR UPDATE;         -- 当前读，排他锁
+SELECT * FROM account WHERE id = 1 LOCK IN SHARE MODE;  -- 共享锁
+----
+
+- `FOR UPDATE` 必须在事务内、且必须走索引，否则加锁范围扩大甚至锁表。
+- 注意 `autocommit` 默认值；DDL 会隐式提交，事务中不要夹 DDL。
+
+=== 索引、执行计划与排查命令
+
+[source,sql]
+----
+SHOW INDEX FROM t_user;
+SHOW CREATE TABLE t_user;
+
+EXPLAIN SELECT * FROM t_user WHERE username = 'alice';
+EXPLAIN ANALYZE SELECT * FROM t_user WHERE status = 1;  -- 8.0.18+ 真实执行并给出耗时
+ANALYZE TABLE t_user;                                    -- 更新统计信息
+
+SHOW PROCESSLIST;                       -- 当前连接、慢 SQL、锁等待
+KILL 123;                               -- 终止连接
+SHOW VARIABLES LIKE 'slow_query_log%';
+SHOW VARIABLES LIKE 'innodb_lock_wait_timeout';
+SHOW ENGINE INNODB STATUS;              -- 最近一次死锁信息
+SELECT * FROM information_schema.innodb_trx;   -- 当前运行中的事务
+----
+
+=== 面试高频写法
+
+[source,sql]
+----
+-- 行转列：按月统计各状态订单数
+SELECT DATE_FORMAT(created_at,'%Y-%m') AS m,
+       SUM(CASE WHEN status='PAID'   THEN 1 ELSE 0 END) AS paid_cnt,
+       SUM(CASE WHEN status='CANCEL' THEN 1 ELSE 0 END) AS cancel_cnt
+FROM t_order GROUP BY m;
+
+-- 去重：每个用户只保留最新一条订单
+SELECT * FROM (
+  SELECT o.*, ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at DESC) AS rn
+  FROM t_order o
+) t WHERE t.rn = 1;
+
+-- 深分页优化：延迟关联，先取主键再回表
+SELECT o.* FROM t_order o
+JOIN (SELECT id FROM t_order WHERE status='PAID' ORDER BY id LIMIT 100000, 10) t
+  ON t.id = o.id;
+----
+
+=== 书写易错点
+
+- `WHERE` 中不要用 `!=`、`NOT IN` 大面积过滤，容易全表扫描；`NOT IN` 遇 `NULL` 结果为空集。
+- 字符串比较注意字符集/排序规则不一致导致索引失效或隐式转换。
+- `ORDER BY` + `LIMIT` 无确定排序字段时分页结果可能重复/缺失，追加唯一键（如 `ORDER BY id`）兜底。
+- 聚合查询注意 `NULL` 语义：`SUM` 忽略 `NULL`，全为 `NULL` 时返回 `NULL` 而非 0，可用 `IFNULL(SUM(...),0)`。
+- 别在事务里做远程调用、大循环等耗时操作，避免长事务。
+
 == 索引
 
 === 索引模型
