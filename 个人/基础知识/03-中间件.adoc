@@ -87,6 +87,63 @@
 | 协议 | 自有 | 自有（类 Kafka 设计） | AMQP
 |===
 
+=== 为什么 Kafka 吞吐远高于 RabbitMQ
+
+先纠正一个说法：准确讲是 *吞吐量* 高，不是「端到端延迟更低」。Kafka 用 *批量 + 顺序* 换吞吐，攒批会带来几毫秒级延迟；RabbitMQ 在单条、小流量、实时投递场景的延迟反而更低。二者是设计目标不同，不是简单的快慢之分。
+
+==== 存储模型：追加日志 vs 队列状态机
+
+- *Kafka*：分区是不可变的 *append-only 日志*，只在文件尾追加，纯顺序写；消息不会因为被消费就删除（按时间/大小整体过期），消费按 offset 顺序读，也是顺序 I/O，几乎没有随机读写。
+- *RabbitMQ*：队列要维护 *每条消息* 的状态（ready → delivered/unacked → 待删除），投递要标记、ack 后要删除，队列索引与元数据频繁更新，随机读写 + 锁竞争；消息堆积时索引膨胀，性能下降明显。
+- 类比：Kafka 像不停追加写日志文件，RabbitMQ 像维护一张不断增删改的表。
+
+==== 零拷贝与页缓存
+
+- *Kafka*：写入先落 OS *page cache*（异步刷盘），读大概率命中缓存 ≈ 读内存；消费时用 `sendfile` 把页缓存里的数据 *从内核态直接发到 socket*，跳过「内核 → 用户 → 内核」的两次拷贝与上下文切换。Broker 不解析消息体、只做搬运，也绕开了 JVM 堆与 GC 压力。
+- *RabbitMQ*：消息需从存储读出、经 Erlang 进程处理、再序列化写入 socket，数据在用户态完整走一遍，每条都有编解码与内存拷贝开销。
+
+==== 批量贯穿全链路
+
+- 生产者攒批（`batch.size` / `linger.ms`）→ Broker 批量追加与刷盘 → 消费者批量拉取（`fetch.min.bytes` / `max.poll.records`）→ 端到端批量压缩（lz4 / snappy / zstd / gzip）。
+- *一次系统调用、一次磁盘 I/O 服务成百上千条消息*，把每条消息的固定成本摊薄到极低。
+- RabbitMQ 以 *单条消息* 为路由、投递、confirm、ack 的单位，per-message 开销无法被摊薄。
+
+==== 消费模型：pull + offset vs push + 逐条 ack
+
+- *Kafka* 消费者主动 pull，按 offset 顺序批量取；Broker 只需记录一个位移（`__consumer_offsets`），*不跟踪每条消息的投递状态*；消息可被多个消费组反复读取而互不影响。
+- *RabbitMQ* 是 push，Broker 要为每条消息维护 delivery tag、unacked 状态、requeue、confirm 与 prefetch 流控，是一个完整的 *逐条状态机*。
+
+==== 分区并行 vs 单队列串行
+
+- *Kafka*：一个 Topic 拆成多个 Partition 分布到不同 Broker，生产与消费天然并行，加分区/加 Broker 即可水平扩展；消费组内分区与消费者一一对应。
+- *RabbitMQ*：单个队列由 *单个 master 节点* 负责（为保证顺序），多消费者只是竞争同一个队列，吞吐受单队列/单节点上限约束；镜像/仲裁队列还要跨节点复制，进一步拉低吞吐。
+
+==== 功能取舍：Kafka 主动「不做」的事
+
+- 不做 Exchange / binding 复杂路由、不做通配符匹配、不做单条 ack 与 reject、不做原生延迟/优先级队列、不做 per-message TTL、不保证全局有序（仅分区内有序）、不做复杂重试与死信（交给应用层）。
+- 每一项「不做」都缩短了消息路径。RabbitMQ 作为通用 AMQP broker 把这些能力都实现了，功能更强，成本自然更高。
+
+==== 结论与选型对照
+
+[cols="2,3,3"]
+|===
+| 维度 | Kafka | RabbitMQ
+| 优化目标 | 吞吐 / 日志流 / 可重放 | 路由灵活性与可靠性 / 低延迟
+| 消息粒度 | 批量 | 单条
+| 存储 | append-only 日志、顺序读写 | 队列 + 状态与索引、随机读写
+| 消费 | pull + offset | push + 逐条 ack
+| 并行 | 多分区、多 Broker 水平扩展 | 单队列串行，靠多队列分摊
+| 典型吞吐 | 十万~百万级 TPS 量级 | 万级 TPS 量级
+| 延迟 | 几 ms~几十 ms（攒批带来） | 单条可到 ms 甚至更低
+| 适用 | 日志 / 埋点 / 流处理 / 事件溯源 | 业务消息、复杂路由、企业级 AMQP
+|===
+
+NOTE: 表中只是数量级参考，实际取决于硬件、`acks`、刷盘策略、消息大小、副本数与压测方式；当要求 `acks=all` + 同步刷盘 + 单条小消息时，Kafka 的优势会明显缩小。
+
+*一句话总结*：Kafka 把消息系统「退化」成一条高吞吐的顺序日志管道，用 *顺序 I/O、页缓存零拷贝、全链路批量、分区并行、极简的逐条状态管理* 把每条消息的成本压到最低；RabbitMQ 把每条消息当成需要独立路由与确认的对象，功能更强但路径更长。
+
+反过来别答错：若面试官问「哪个延迟更低」，要说清 RabbitMQ 在单条实时投递上可能更低，Kafka 强在 *吞吐与可重放*。
+
 === Kafka 核心
 
 - 组成：Producer / Consumer / Broker / Topic / Partition / Consumer Group。
@@ -389,3 +446,14 @@
 - 高可用：主从复制 + 自动故障转移。
 - 功能：顺序、延迟、事务、重试、死信、幂等。
 - 性能：批量、压缩、零拷贝、异步刷盘。
+
+=== 15. 为什么 Kafka 比 RabbitMQ 快？
+
+- *先纠正前提*：准确说是 *吞吐量* 高，不是延迟更低。Kafka 用批量和顺序换吞吐，攒批带来几毫秒延迟；RabbitMQ 在单条、小流量、实时投递场景延迟反而更低。
+- *存储*：Kafka 分区是 append-only 日志，纯顺序写、按 offset 顺序读、消费不删单条消息；RabbitMQ 队列要维护每条消息状态（ready/unacked/删除）与队列索引，随机读写、堆积时索引膨胀。
+- *I/O*：Kafka 写落 OS page cache、消费用 `sendfile` 零拷贝从内核直接发 socket，Broker 不解析消息体、绕开 JVM GC；RabbitMQ 消息要经 Erlang 进程读出、序列化，数据完整走一遍用户态。
+- *批量*：生产者攒批、Broker 批量刷盘、消费者批量拉取、端到端压缩，一次 I/O 服务成百上千条；RabbitMQ 以单条消息为路由/confirm/ack 单位，固定成本无法摊薄。
+- *消费模型*：Kafka pull + 只记录 offset，不跟踪每条消息状态；RabbitMQ push + 逐条 delivery tag、unacked、requeue、prefetch 流控。
+- *并行*：Kafka 多 Partition 分布多 Broker 天然水平扩展；RabbitMQ 单队列由单个 master 串行负责，多消费者只是竞争同一队列。
+- *功能取舍*：Kafka 不做复杂 Exchange 路由、单条 ack、原生延迟/优先级队列、全局有序、复杂重试与死信，路径更短；RabbitMQ 功能全面但每一步都要成本。
+- *结论*：Kafka 强在吞吐与可重放（日志/埋点/流处理），RabbitMQ 强在路由灵活、单条可靠性与低延迟（业务消息）。具体拆解见「为什么 Kafka 吞吐远高于 RabbitMQ」。
