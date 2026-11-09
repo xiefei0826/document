@@ -32,6 +32,155 @@
 - 单库：本地事务。
 - 跨库跨服务强一致场景少，多采用最终一致：TCC、Saga、事务消息 + 本地消息表。
 - 原则：能用幂等 + 重试 + 补偿解决就不用强一致。
+- 具体组件与落地方式见下节「分布式事务：常用组件与实现方式」。
+
+== 分布式事务：常用组件与实现方式
+
+分布式事务没有银弹：强一致（XA/2PC）以资源锁定和可用性为代价，工程上更常用的是「补偿 + 可靠消息」的最终一致。下面按 *实现方式 → 具体组件 → 落地注意点* 梳理。
+
+=== 实现方式与组件总览
+
+[cols="2,1,1,1,3,3"]
+|===
+| 实现方式 | 一致性 | 侵入性 | 性能 | 代表组件 | 适用场景
+| XA / 2PC | 强一致 | 低 | 低 | Seata XA / Atomikos / Narayana / ShardingSphere | 短事务、同机房跨库、必须强一致
+| AT | 最终一致 | 极低 | 中 | Seata AT | Java + 关系库、想零改造接入
+| TCC | 最终一致 | 高 | 高 | Seata TCC / DTM / ByteTCC | 金融支付、需要资源预留
+| Saga | 最终一致 | 中 | 高 | Seata Saga / Camunda / Temporal / DTM | 长事务、跨外部系统
+| 本地消息表 | 最终一致 | 中 | 高 | 自研定时任务 / Canal | 异步解耦、MQ 无事务能力
+| 事务消息 | 最终一致 | 低 | 高 | RocketMQ（半消息） | 异步削峰、上下游解耦
+| 最大努力通知 | 最终一致 | 低 | 高 | 定时重试 + 对账 | 对外回调、允许延迟
+|===
+
+=== 常见实现方式详解
+
+==== 2PC / XA（资源层强一致）
+
+- 流程：协调者发起 Prepare，各参与者预提交并持锁 → 全部成功则 Commit，任一失败则 Rollback。
+- 优点：强一致，业务几乎无侵入（依赖数据库 XA 接口）。
+- 缺点：同步阻塞、协调者单点、资源锁定时间长、网络分区可能悬挂，跨服务长事务不适用。
+- 落地：JTA 实现（Atomikos / Narayana / Bitronix）、ShardingSphere XA、Seata XA；MySQL 需 5.7+ 才有较完善的 XA 支持。
+
+==== TCC（业务层补偿）
+
+- 三阶段：`Try` 预留资源（冻结金额/库存）→ `Confirm` 真正扣减 → `Cancel` 释放预留。
+- 优点：不长期持有数据库锁，性能高，隔离策略可自定义。
+- 缺点：每个操作要写三个方法，业务侵入大；必须处理空回滚、幂等、悬挂。
+- 落地：Seata TCC（`@TwoPhaseBusinessAction`）、DTM、ByteTCC、TCC-Transaction。
+
+==== Saga（长事务 + 补偿编排）
+
+- 把长事务拆成一串本地事务 T1…Tn，每个配一个补偿 C1…Cn；某步失败则从当前点逆向执行补偿。
+- 两种编排：*协同式 Choreography*（事件驱动、无中心协调者，链路复杂后难维护）、*编排式 Orchestration*（中心协调器/状态机，可观测性好，更推荐）。
+- 优点：不阻塞、适合跨外部系统与长流程。
+- 缺点：一阶段就已提交，缺乏隔离性（可能脏读）；补偿逻辑复杂且不保证一定成功。
+- 落地：Seata Saga（JSON 状态机）、Camunda / Flowable / Zeebe、Temporal / Cadence、Axon / Eventuate Tram、DTM。
+
+==== 本地消息表
+
+- 业务库建消息表，*业务数据与消息记录在同一个本地事务*写入 → 后台任务轮询发送 MQ → 成功后标记已发送 → 消费端幂等。
+- 可用 Canal 监听 binlog 替代轮询，降低侵入与延迟。
+- 优点：不依赖 MQ 的事务能力，可靠性高，任何数据库都能用。
+- 缺点：消息表与业务库耦合、有轮询延迟、需处理重复发送。
+
+[source,sql]
+----
+CREATE TABLE t_local_message (
+  id            BIGINT PRIMARY KEY AUTO_INCREMENT,
+  biz_no        VARCHAR(64) NOT NULL COMMENT '业务单号',
+  payload       TEXT        NOT NULL COMMENT '消息内容',
+  topic         VARCHAR(64) NOT NULL,
+  status        TINYINT     NOT NULL DEFAULT 0 COMMENT '0待发 1已发 2失败',
+  retry_count   INT         NOT NULL DEFAULT 0,
+  next_retry_at DATETIME    NOT NULL,
+  created_at    DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_status_retry (status, next_retry_at)
+) ENGINE=InnoDB;
+----
+
+==== 事务消息（半消息）
+
+- RocketMQ：发半消息（对消费者不可见）→ 执行本地事务 → 回执 commit/rollback → 未回执时 Broker 定时 *回查* 本地事务状态 → 确定投递或丢弃。
+- 优点：无需自建消息表，与业务解耦，吞吐高。
+- 缺点：强依赖 MQ；回查接口必须能查到确定的事务结果；消费端仍需幂等。
+
+==== 最大努力通知 + 对账兜底
+
+- 通知方按退避策略重试（如 1min / 5min / 30min / 2h…），达上限后进死信并告警；接收方提供幂等的查询/回执接口。
+- 配合定时对账任务（T+1 或准实时）扫描状态异常单，主动补偿或转人工。
+- 这是 *所有方案的最后一道防线*：任何分布式事务都要有对账与人工兜底。
+
+=== 常用组件
+
+==== Seata（Java 生态最主流）
+
+三个角色：
+
+- *TC*（Transaction Coordinator）：独立部署的 `seata-server`，维护全局事务与分支事务状态，驱动全局提交/回滚。
+- *TM*（Transaction Manager）：嵌在业务应用，用 `@GlobalTransactional` 标记全局事务边界，向 TC 发起开启/提交/回滚。
+- *RM*（Resource Manager）：嵌在业务应用，管理分支事务，向 TC 注册分支、上报状态、执行本地提交/回滚。
+- 全局事务 ID（*XID*）沿 RPC 调用链透传，Seata 已适配 Dubbo / Feign / gRPC 等。
+
+四种模式：
+
+[cols="1,3,2,2"]
+|===
+| 模式 | 原理 | 优点 | 限制
+| AT（默认） | 拦截 SQL 生成前后镜像写入 `undo_log`，与业务 SQL 在同一本地事务提交；二阶段异步删 undo，或按 before image 生成反向 SQL 补偿；TC 持 *全局锁* 防脏写 | 零业务侵入，一个注解即可接入 | 仅支持关系库、需建 `undo_log` 表、全局锁有开销
+| TCC | 业务实现 Try/Confirm/Cancel，Seata 负责调度与容错 | 不长期持锁、性能高 | 三方法开发量大，需处理空回滚/幂等/悬挂
+| Saga | 状态机编排正向服务与补偿服务，一阶段直接提交 | 适合长事务、跨外部系统 | 无隔离性，补偿需业务保证
+| XA | 基于数据库原生 XA 的 2PC | 强一致、标准协议 | 资源锁定久，需 DB 支持 XA
+|===
+
+- TC 必须高可用部署（多节点 + 全局事务状态持久化到 DB/Redis），否则成为单点。
+
+==== JTA / XA 与分库分表组件
+
+- *Atomikos / Narayana / Bitronix*：Java 应用内嵌的 JTA 事务管理器实现。
+- *ShardingSphere*：分库分表场景整合 XA（Atomikos/Narayana）或 BASE 柔性事务（Seata AT）。
+- MySQL XA 语句：`XA START / END / PREPARE / COMMIT / ROLLBACK`。
+
+==== Saga / 工作流编排类
+
+- *Seata Saga*、*ServiceComb Saga*（华为）：状态机式补偿编排。
+- *Camunda / Flowable / Zeebe*：BPMN 工作流引擎，用流程节点 + 补偿节点实现长事务。
+- *Temporal / Cadence*：持久化工作流，「代码即工作流」，自带重试、超时、补偿，长事务场景越来越常用。
+- *Axon Framework / Eventuate Tram*：事件溯源 + Saga，配合 CDC（binlog / WAL）做可靠消息。
+
+==== 消息、对账与跨语言组件
+
+- *RocketMQ*：事务消息（半消息 + 回查）。
+- *Kafka*：`enable.idempotence` + 事务 API + `read_committed`，保证流处理内的 exactly-once；跨服务业务事务仍需业务幂等。
+- *RabbitMQ*：publisher confirm + 手动 ack，本身无半消息能力，通常配合本地消息表。
+- *Canal*：伪装成 MySQL slave 订阅 binlog，用于异步投递、缓存删除、对账。
+- *DTM*（Go，跨语言）：一个框架同时支持 TCC、Saga、XA、二阶段消息、Workflow，非 Java 栈常选。
+- *Tx-LCN / LCN 模式*：国内早期框架，已停止维护，仅作了解，不推荐新项目使用。
+- *分布式数据库自带*：TiDB（Percolator + TSO 的 2PC）、OceanBase、CockroachDB 在数据库层解决跨节点事务，应用侧无需额外框架。
+
+=== 选型速查
+
+1. 单库单服务 → 本地事务，不要引入分布式事务。
+2. 跨库、同一应用、同机房、必须强一致 → XA（Seata XA / ShardingSphere XA）。
+3. Java 微服务、以关系库为主、想快速接入 → Seata AT。
+4. 金融/资金/库存，需要资源预留且性能要求高 → TCC（Seata TCC / DTM）。
+5. 长流程、跨外部系统（第三方支付、物流） → Saga（Seata Saga / Temporal / Camunda）。
+6. 异步解耦、允许秒级延迟 → RocketMQ 事务消息 或 本地消息表。
+7. 对外通知、允许更长时间不一致 → 最大努力通知 + 对账兜底。
+8. 非 Java / 多语言栈 → DTM，或 MQ + 幂等自研。
+9. 无论哪种 → 幂等、重试、监控告警、对账兜底都必须有。
+
+=== 落地注意点（面试高频）
+
+- *幂等是前提*：Confirm/Cancel、消息消费、事务回查、补偿、重试全部要幂等（唯一索引、状态机、去重表）。
+- *TCC 三大坑*：空回滚（Try 未执行却收到 Cancel）、幂等、悬挂（Cancel 比 Try 先到）→ 用分支事务状态表 + 唯一索引判定与拦截。
+- *隔离性*：AT 靠 TC 全局锁防脏写；TCC/Saga 一阶段已提交、无隔离，需用「冻结金额 / 中间状态」等业务设计避免脏读。
+- *补偿不保证成功*：必须有重试退避、死信告警、人工处理入口，以及 T+1 对账兜底。
+- *事务边界尽量小*：长事务锁资源、易超时、回滚链长、可用性差。
+- *XID 透传*：跨服务调用链必须传递全局事务 ID，否则分支事务无法关联到全局事务。
+- *协调者高可用*：Seata Server 多节点 + 状态持久化（DB/Redis），避免单点。
+- *回查接口要可靠*：事务消息的回查必须能返回确定的本地事务结果，否则消息长期悬挂。
+- *可观测性*：监控全局事务成功率、悬挂/回滚失败数、补偿失败队列、消息积压。
+- *能不用就不用*：优先「本地事务 + 可靠消息 + 幂等」，强一致只放在真正必要的环节。
 
 == 分布式 ID
 
@@ -223,8 +372,9 @@ SDD（Spec-Driven Development，规格驱动开发）：先产出结构化、可
 
 === 2. 分布式事务有哪些方案？如何选型？
 
-- 方案：2PC/3PC（强一致）、TCC（Try-Confirm-Cancel）、Saga（补偿）、本地消息表、事务消息（RocketMQ 半消息）。
+- 方案：2PC/3PC（强一致）、TCC（Try-Confirm-Cancel）、Saga（补偿）、本地消息表、事务消息（RocketMQ 半消息）、最大努力通知 + 对账。
 - 选型：单库用本地事务；跨库跨服务优先最终一致——可回滚业务用 TCC，长事务用 Saga，消息驱动用事务消息 + 本地消息表；能用幂等+重试+补偿就不用强一致。
+- 组件：Seata（AT/TCC/Saga/XA，TC + TM + RM 三角色）、DTM（跨语言）、RocketMQ 事务消息、Atomikos/Narayana（JTA-XA）、ShardingSphere XA、Camunda/Temporal（Saga 编排）；详见「分布式事务：常用组件与实现方式」。
 
 === 3. 微服务如何拆分？如何治理？
 
