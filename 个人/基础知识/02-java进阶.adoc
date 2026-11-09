@@ -195,6 +195,125 @@
 - 工具：`jps`（进程）、`jstat`（GC 统计）、`jmap -heap/-histo/-dump`、`jstack`（线程）、`jinfo`（参数）、`jcmd`、`arthas`。
 - 思路：先看监控（GC 频率、停顿、内存曲线），再定位（dump 分析大对象、线程栈定位死锁/阻塞），后调参/改代码。
 
+== OOM 排查与解决方案
+
+=== 先分清：是哪一种 OOM
+
+[cols="2,2,4"]
+|===
+| 错误信息 | 出问题的区域 | 典型原因
+| `Java heap space` | 堆 | 对象过多/过大、内存泄漏、一次性加载大量数据
+| `GC overhead limit exceeded` | 堆 | 堆不够或泄漏导致 GC 空转（约 98% 时间只回收不到 2%）
+| `Metaspace`（JDK8+）/ `PermGen space`（JDK7-） | 元空间 | 类加载过多、动态代理与 CGLIB 大量生成类、热部署造成 ClassLoader 泄漏
+| `Compressed class space` | 压缩类空间 | 开启类指针压缩后类元数据超过上限
+| `Direct buffer memory` | 堆外直接内存 | NIO / Netty 的 DirectByteBuffer 未释放，或 `MaxDirectMemorySize` 过小
+| `unable to create new native thread` | 线程栈 / 系统资源 | 线程数过多、`-Xss` 过大、`ulimit -u` 或容器 pids 限制
+| `Requested array size exceeds VM limit` | 堆 | 申请了超大数组
+| 无 OOM 日志但进程消失 | 容器 / 操作系统 | 被 cgroup OOMKilled，K8s 显示 `Exit Code 137`
+|===
+
+- `StackOverflowError` 属虚拟机栈溢出（无限递归、栈帧过大），严格说不是 OOM，但常一起排查。
+- *先定位是哪个区域，再谈怎么修*：堆溢出绝不等于「加大 `-Xmx` 就能解决」，泄漏改参数只是推迟崩溃时间。
+
+=== 排查前置：先把现场留住
+
+生产环境建议默认带上这些参数：
+
+[source,bash]
+----
+-XX:+HeapDumpOnOutOfMemoryError
+-XX:HeapDumpPath=/data/dumps
+-Xlog:gc*:file=/data/logs/gc.log:time,uptime,level,tags:filecount=10,filesize=100m   # JDK9+
+-XX:+PrintGCDetails -XX:+PrintGCDateStamps -Xloggc:/data/logs/gc.log                # JDK8
+----
+
+- 可选：`-XX:+ExitOnOutOfMemoryError`（快速失败，便于编排系统拉起）、`-XX:NativeMemoryTracking=summary`（排查堆外内存）。
+- 注意：dump 会 STW，文件体积接近堆大小，务必预留磁盘；容器里挂到持久卷，别写进容器可写层（重启即丢）。
+- *容器化要点*：`-XX:+UseContainerSupport`（JDK 8u191+ / 10+ 默认开启），用 `-XX:MaxRAMPercentage` 而非写死 `-Xmx`；堆一般只占 memory limit 的 *50~70%*，其余要留给元空间、线程栈、直接内存、JIT code cache 与 GC 自身开销。
+
+=== 现场还在：一步步定位
+
+[source,bash]
+----
+jps -l                                             # 找 Java 进程 pid
+jstat -gcutil <pid> 1000 10                        # 各代使用率、GC 次数与耗时
+jmap -heap <pid>                                   # 各区容量与占用
+jmap -histo:live <pid> | head -30                  # 实例数与占用排行（:live 会触发一次 Full GC）
+jcmd <pid> GC.class_histogram                      # 同上，jcmd 等价方式
+jmap -dump:format=b,file=/data/dump.hprof <pid>    # 导出堆快照（jmap 方式）
+jcmd <pid> GC.heap_dump /data/dump.hprof           # 导出堆快照（jcmd 方式，二选一）
+jstack <pid> > jstack.log                          # 线程栈：线程数、堆积、死锁
+jcmd <pid> VM.native_memory summary                # 需先开 NMT，查看堆外内存分布
+----
+
+- `jstat -gcutil`：老年代长期接近 100%、FGC 次数持续上涨且回收后不回落 → *典型内存泄漏*；若每次 Full GC 后能回落到低位 → 更可能是流量突刺或一次性大对象。
+- `jmap -histo`：某个业务类实例数异常多（几十万/百万），基本可以锁定方向。
+- `jstack`：线程数暴涨要查线程池配置；大量 WAITING 且队列积压会让对象持续堆积。
+- 用 Arthas 更顺手：`dashboard`、`memory`、`heapdump`、`profiler`（火焰图定位热点分配）、`vmtool`。
+
+=== 堆 dump 导出的几种方式
+
+`jmap` 与 `jcmd` *都能*导出 `.hprof`，二选一即可，不必重复执行：
+
+[cols="2,3,3"]
+|===
+| 方式 | 命令 | 说明
+| `jmap -dump` | `jmap -dump:format=b,file=/data/dump.hprof <pid>` | 最经典、JDK8 时代主流，兼容性好；只导出存活对象用 `jmap -dump:live,format=b,file=...`
+| `jcmd GC.heap_dump` | `jcmd <pid> GC.heap_dump /data/dump.hprof` | JDK7+ 的统一诊断工具，官方推荐替代 jmap；导出全部对象用 `jcmd <pid> GC.heap_dump -all /data/dump.hprof`
+| OOM 自动 dump | `-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=...` | OOM 瞬间由 JVM 自动生成，是「进程已死」场景唯一可靠的现场
+| Arthas | `heapdump /data/dump.hprof` | 已 attach 时最方便，可配合 `dashboard` / `memory` 一起看
+| Spring Boot Actuator | `GET /actuator/heapdump` | Web 应用可直接 HTTP 下载 hprof；*该端点必须鉴权，禁止暴露公网*
+|===
+
+- *默认行为相反，容易踩坑*：`jmap -dump:format=b` 默认导出 *全部* 对象（含不可达）；`jcmd GC.heap_dump` 默认只导出 *存活* 对象（等价于 `jmap -dump:live`）。建议显式写明，别依赖默认值。
+- *存活对象模式会先触发一次 Full GC*，线上大堆 STW 明显：低峰执行、先摘流量；若想保留「原始现场」（含待回收对象），就不要用 `live` 或 jcmd 默认模式。
+- *dump 本身会 STW*，堆越大停顿越久（数 GB 可能几十秒到数分钟）；文件体积约等于存活对象量（live）或整个堆（all），执行前先确认磁盘余量。
+- 权限：`jmap` / `jcmd` 需要与 Java 进程 *同一用户* 才能 attach，容器内还要确认 `SYS_PTRACE` 能力或 `/proc` 可访问。
+- 别混淆：`kill -3 <pid>`、`jstack`、`jcmd Thread.print` 导出的是 *线程栈*（thread dump），不是堆快照。
+
+=== 进程已死：靠日志与监控还原
+
+- *gc.log*：看 Full GC 频率、每次回收前后的堆占用、GC 耗时趋势，判断是缓慢泄漏还是瞬时打满。
+- *监控曲线*：阶梯式上涨且不回落 → 泄漏；尖刺后回落 → 一次性大对象/大查询；缓慢线性上涨 → 无界缓存。
+- *heap dump*：若已配置自动 dump，直接按下一节分析。
+- *容器场景*：`kubectl describe pod` 看 `Last State: Terminated / Reason: OOMKilled / Exit Code 137`；宿主机 `dmesg -T | grep -i oom` 可查内核 kill 记录。此时 JVM 日志里可能 *完全没有 OOM*，因为进程被直接杀掉。
+
+=== 分析 heap dump 的方法（关键）
+
+1. 用 MAT 打开，先看 *Leak Suspects* 自动报告，再看 *Dominator Tree* 找出支配堆的大对象。
+2. Histogram 按 *Retained Heap*（保留堆）排序，不要只看 Shallow Heap（对象自身大小）——集合类自身很小，却能持有海量元素。
+3. 对可疑对象查 *Path to GC Roots*，排除弱/软/虚引用，只看 *强引用链*，找到持有者：常见是 `static` 集合、单例缓存、`ThreadLocal`、线程栈局部变量、未注销的监听器/回调。
+4. *对比两次 dump*（间隔一段时间、流量相近时各取一次）：用 MAT 的 compare 功能看哪些类的实例数持续增长，增长的就是泄漏对象，比单次 dump 更有说服力。
+5. 结合业务：最近是否发布、是否有大促/批量任务、是否新增了本地缓存或导出功能。
+
+=== 常见原因与解决方案
+
+[cols="2,3,4"]
+|===
+| 场景 | 典型原因 | 解决方案
+| 堆内存泄漏 | `static Map` / 本地缓存无上限无过期、`ThreadLocal` 未 `remove()`、监听器未注销、连接或流未关闭 | 修引用；缓存加 `maximumSize` + `expireAfterWrite`（Caffeine）或改 Redis；TWR / `finally` 中清理资源
+| 一次性大对象 | 全表查进 `List`、大文件整体读入内存、报表全量导出、批量接口 | 分页或游标（MyBatis `Cursor`）、流式读写、分批处理、限制单批大小、必要时限流
+| 参数不合理 | `-Xmx` 过小、新生代过小导致频繁晋升、`-Xms` 与 `-Xmx` 不等引发动态扩容 | `-Xms` 与 `-Xmx` 设成相同，合理设置 `-Xmn` / `NewRatio`，大堆用 G1 / ZGC；但调参只是缓解，泄漏必须改代码
+| 元空间溢出 | CGLIB / 动态代理 / 字节码增强大量生成类、热部署重复部署导致 ClassLoader 泄漏、JSP 过多 | 用 MAT 看 ClassLoader 数量、减少运行时生成类、修复重复部署、`-XX:MaxMetaspaceSize` 设上限以便早暴露
+| 堆外内存溢出 | Netty `ByteBuf` 未 `release()`、DirectByteBuffer 未回收、`MaxDirectMemorySize` 太小 | Netty 开 `ResourceLeakDetector` 并设为 `PARANOID` 定位泄漏、确保 `ReferenceCountUtil.release()`、调大上限、限制并发
+| 线程数过多 | 每次请求 `new Thread()`、线程池无上限、`-Xss` 过大、容器 pids 限制 | 统一用有界线程池、减小 `-Xss`、检查 `ulimit -u` 与 `pids.max`
+| `GC overhead limit exceeded` | 堆不够或泄漏导致 GC 空转 | 按堆溢出处理；`-XX:-UseGCOverheadLimit` 只会掩盖问题，不能作为方案
+| 容器 OOMKilled | 堆 + 元空间 + 直接内存 + 线程栈 + code cache 超出 memory limit | 降低 `MaxRAMPercentage`、限制直接内存与线程数、用 NMT 找堆外大头、调大容器 limit
+| `StackOverflowError` | 无限递归、递归过深、栈帧过大 | 改迭代、排查循环调用、必要时增大 `-Xss`
+|===
+
+=== 应急处理与根治
+
+- *应急（先恢复服务）*：摘流量、*重启前务必先 dump*、限流降级、回滚最近发布、临时扩容。
+- *根治*：修泄漏代码、给缓存加上限、改分页与流式处理、调整 JVM 与容器内存参数。
+- *防复发（监控告警）*：老年代使用率、Full GC 次数与耗时、堆与堆外内存曲线、线程数、Metaspace、容器内存占 limit 比例、日志中的 OOM 关键字；关键服务配置自动 dump 与告警联动。
+
+=== 面试答题框架
+
+六步走：*看监控定趋势 → 留现场（dump / gc.log） → 定区域（哪一类 OOM） → 分析强引用链找持有者 → 按因修复（代码优先于调参） → 补监控防复发*。
+
+加分点：能区分 *JVM 自身 OOM* 与 *容器 OOMKilled（Exit Code 137）*，知道堆外内存要用 NMT 排查，并强调「两次 dump 对比」才是确认泄漏的可靠手段。
+
 == 高频真题与参考答案
 
 === 1. 描述 JVM 运行时数据区，各区域作用与异常？
@@ -282,5 +401,7 @@
 
 === 15. 线上 CPU 飙高 / OOM 如何排查？
 
-- *CPU 飙高*：`top` 找到高 CPU 进程 → `top -Hp <pid>` 找高 CPU 线程 → `printf '%x'` 转十六进制 → `jstack <pid>` 找对应 nid 的线程栈，定位死循环/频繁 GC/锁竞争。
-- *OOM*：加 `-XX:+HeapDumpOnOutOfMemoryError` 保留现场 → `jmap -dump` 或 MAT/JProfiler 分析 dump，看大对象、类数量、GC Roots 引用链 → 定位内存泄漏或参数配置不当。
+- *CPU 飙高*：`top` 找到高 CPU 进程 → `top -Hp <pid>` 找高 CPU 线程 → `printf '%x'` 把线程 id 转十六进制得到 nid → `jstack <pid>` 中按 nid 找线程栈，定位死循环、频繁 GC、锁竞争或序列化热点。
+- *OOM 排查*：先保留现场——`-XX:+HeapDumpOnOutOfMemoryError` 自动 dump + gc.log，进程还活着时用 `jmap -dump:format=b,file=... <pid>` 或 `jcmd <pid> GC.heap_dump` 手动导出 → `jstat -gcutil` 看老年代与 FGC 趋势、`jmap -histo` 找异常实例 → 用 MAT 分析 dump 的 Dominator Tree 与 *Path to GC Roots* 找强引用持有者 → *对比两次 dump* 确认哪些对象持续增长 → 区分「泄漏 / 一次性大对象 / 参数 / 堆外 / 容器 OOMKilled」再对症下药。
+- *OOM 解决*：应急先摘流量、dump 后重启、限流或回滚；根治是修泄漏代码（无界缓存、`ThreadLocal` 未清理、资源未关闭）、缓存加上限、改分页与流式处理、调 JVM 与容器内存；最后补监控告警防复发。
+- 加分点：能区分 *JVM 自身 OOM* 与 *容器 OOMKilled（Exit Code 137，JVM 日志里没有 OOM）*，并知道堆外内存要用 NMT 排查。完整流程见「OOM 排查与解决方案」。
