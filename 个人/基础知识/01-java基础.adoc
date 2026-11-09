@@ -115,6 +115,85 @@ try (BufferedReader br = Files.newBufferedReader(path)) {
 } // 自动 close
 ----
 
+=== try-catch-finally 注意事项
+
+NOTE: 与 `try` 搭配的是 *finally* 而不是 `final`；`final` 是修饰符（类不可继承、方法不可重写、变量引用不可变），`finalize()` 是已废弃的 `Object` 方法，三者不要混淆（详见真题第 8 题）。
+
+==== finally 的执行时机与返回值陷阱
+
+- 顺序：try 中 `return` 的表达式 *先求值并暂存*，再执行 `finally`，最后才真正返回；所以 `finally` 夹在「return 求值之后、返回之前」。
+- *禁止在 finally 中 `return`*：会覆盖 try/catch 的返回值，还会吞掉 try 中抛出的异常。
+- *禁止在 finally 中抛异常*：会覆盖 try/catch 的原始异常，导致真正的错误丢失。
+- 改返回值的差异：基本类型（或给引用重新赋值）不影响返回结果，但修改 *引用对象的内容* 会反映到返回对象上。
+
+[source,java]
+----
+static int f1() {
+    int x = 1;
+    try { return x; }       // 返回值 1 已确定
+    finally { x = 2; }      // 返回的仍是 1
+}
+
+static List<String> f2() {
+    List<String> list = new ArrayList<>();
+    try { return list; }
+    finally { list.add("x"); }   // 返回的 list 中能看到 "x"
+}
+----
+
+==== finally 并非绝对执行
+
+- 以下情况不会（或来不及）执行：`System.exit()`、JVM 崩溃/进程被强杀、断电、try 块内死循环、线程被强制终止。
+- 守护线程在所有非守护线程结束时会直接被 JVM 终止，`finally` 可能来不及跑。
+- 结论：`finally` 只适合清理「本次调用」的资源（关流、解锁、还原标志位），*不要把持久化、发消息、状态落库等关键业务放进 finally 求「保底」*。
+
+==== 资源关闭优先用 try-with-resources
+
+- 手写 `finally` 关流容易漏判空、多个资源关闭繁琐，且 `close()` 自身抛异常会 *覆盖业务异常*。
+- `try-with-resources`（JDK7+）自动关闭实现了 `AutoCloseable` 的资源：多个资源按 *声明的逆序* 关闭；`close()` 抛出的异常作为 *suppressed 异常* 挂在主异常上，不会丢失。
+
+[source,java]
+----
+try (InputStream in = new FileInputStream(src);
+     OutputStream out = new FileOutputStream(dst)) {
+    in.transferTo(out);
+} // 先关 out，再关 in；close 异常以 suppressed 形式保留
+----
+
+- 若必须手写，注意逐层判空并单独处理 `close()` 的异常，或用 `IOUtils.closeQuietly` 之类的工具方法。
+
+==== catch 的匹配与顺序
+
+- 多个 `catch` 自上而下匹配，*子类必须写在父类之前*，否则编译报错（不可达的 catch 块）。
+- JDK7+ 支持多异常合并 `catch (IOException | SQLException e)`，此时异常变量隐式 `final`，且并列类型之间不能有继承关系。
+- 避免 `catch (Exception e)` 一网打尽，更不要 `catch (Throwable)` —— 会把 `OutOfMemoryError` 这类 `Error` 一并吞掉，掩盖 JVM 级故障。
+
+==== 不要吞异常 / 正确记录日志
+
+- 空 `catch` 块、只调用 `e.printStackTrace()` 都是大忌：`printStackTrace` 输出到标准错误流，日志系统采集不到，也丢失业务上下文。
+- 正确做法：用日志框架带上上下文记录（`log.error("扣款失败, orderId={}", orderId, e)`）→ 包装后重抛，或转换为明确的业务错误码。
+- 重抛要保留原始堆栈：`throw e;`；包装时务必把原异常作为 cause 传入 `new XxxException("...", e)`；不要 `throw new RuntimeException(e.getMessage())`，会丢掉堆栈和异常类型。
+
+==== 受检异常与 @Transactional 的高频坑
+
+- Spring `@Transactional` 默认只对 `RuntimeException` / `Error` 回滚，受检异常不回滚（需 `@Transactional(rollbackFor = Exception.class)`）。
+- 更常见的线上事故：在事务方法内 `try-catch` 吞掉异常又不重新抛出，事务拦截器收不到异常 → *事务照样提交，不回滚*。
+- 既要记日志又要回滚：处理完把异常 `throw` 出去，或调用 `TransactionAspectSupport.currentTransactionStatus().setRollbackOnly()`。
+
+==== 性能与编码习惯
+
+- `try-catch` 本身开销很小，昂贵的是「抛出异常」时填充堆栈（`fillInStackTrace`）；因此 *不要用异常做正常流程控制*（拿异常跳出循环、用异常表示业务分支）。
+- `try` 块只包住真正可能抛异常的最小代码段，便于定位，也能缩小锁与事务的范围。
+- 异常信息带业务上下文（订单号、用户 ID），但不要把密码、密钥、身份证号等敏感数据写进日志。
+- 自定义异常优先继承 `RuntimeException`，避免受检异常层层声明污染接口签名。
+- `finally` 里只做轻量清理，不放业务逻辑、不做远程调用。
+
+==== 受检 vs 非受检怎么选
+
+- *受检异常*：调用方可以合理恢复的情况（文件不存在、网络超时需重试）→ 编译期强制处理。
+- *非受检异常*：编程错误或不可恢复（NPE、下标越界、状态非法）→ 快速失败，不必层层声明。
+- 现代框架（Spring、MyBatis）普遍倾向非受检异常，业务代码更清爽。
+
 == 集合框架（速览，进阶详见集合专题）
 
 - `List`：`ArrayList`（数组，随机访问快）、`LinkedList`（链表，增删快）、`Vector`（线程安全已过时）。
