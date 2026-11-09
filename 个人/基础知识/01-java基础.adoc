@@ -240,6 +240,124 @@ try (InputStream in = new FileInputStream(src);
 - 垃圾回收：判断可达性（GC Roots），算法有标记-清除、标记-复制、标记-整理；常见收集器 `Serial/Parallel/CMS/G1/ZGC`。
 - 类加载：加载→验证→准备→解析→初始化；双亲委派模型。
 
+== JDK 各版本升级点与差异
+
+=== 版本节奏与 LTS
+
+- JDK9 起改为 *每 6 个月一个版本*（每年 3 月、9 月），每 2 年选一个 *LTS*（长期支持）版本：`8 → 11 → 17 → 21 → 25`。
+- 非 LTS 版本只维护约 6 个月，生产环境一般只用 LTS。
+- 面试高频：说清「8 的 Lambda、17 的强封装、21 的虚拟线程」三个里程碑，再补 LTS 节奏即可。
+- 标为「预览 / 孵化」的特性需要 `--enable-preview` 才能使用，且 *不保证下个版本兼容，禁止用于生产*。
+
+=== 各版本关键特性总览
+
+[cols="1,1,1,7"]
+|===
+| 版本 | 时间 | LTS | 关键特性
+| 8 | 2014.03 | 是 | Lambda / Stream / 函数式接口、`java.time`、Optional、接口 default 方法、Metaspace 取代 PermGen、HashMap 红黑树
+| 9 | 2017.09 | 否 | 模块化 JPMS + `jlink`、JShell、集合工厂 `List.of`、G1 成为默认 GC、字符串紧凑存储（`byte[]`）
+| 10 | 2018.03 | 否 | `var` 局部变量类型推断、G1 并行 Full GC、AppCDS
+| 11 | 2018.09 | 是 | HttpClient 转正、String/File 便利方法、移除 Java EE 与 CORBA 模块、ZGC（实验）、JFR 开源、单文件源码启动
+| 12 | 2019.03 | 否 | Switch 表达式（预览）、Shenandoah GC（实验）、`Collectors.teeing`
+| 13 | 2019.09 | 否 | 文本块（预览）、Switch 表达式 `yield`（预览）、ZGC 归还内存
+| 14 | 2020.03 | 否 | Switch 表达式转正、Record 与 instanceof 模式匹配（预览）、Helpful NPE、*移除 CMS*
+| 15 | 2020.09 | 否 | 文本块转正、密封类（预览）、Hidden Classes、ZGC 与 Shenandoah 生产可用、*移除 Nashorn*、默认禁用偏向锁
+| 16 | 2021.03 | 否 | Record 与 instanceof 模式匹配转正、`Stream.toList()`、Vector API（孵化）、默认强封装 JDK 内部 API
+| 17 | 2021.09 | 是 | 密封类转正、switch 模式匹配（预览）、强封装内部 API、移除 Applet 与 RMI Activation、弃用 Security Manager、Spring Boot 3 基线
+| 18 | 2022.03 | 否 | *默认字符集改为 UTF-8*、`jwebserver`、JavaDoc `@snippet`、`finalize` 标记待移除
+| 19 | 2022.09 | 否 | *虚拟线程（预览）*、结构化并发（孵化）、Record Patterns（预览）
+| 20 | 2023.03 | 否 | 虚拟线程 / Record Patterns / Scoped Values 等预览特性迭代，正式特性较少
+| 21 | 2023.09 | 是 | *虚拟线程转正*、Sequenced Collections、Record 与 switch 模式匹配转正、分代 ZGC
+| 22 | 2024.03 | 否 | 未命名变量 `_`、FFM API 转正、Stream Gatherers（预览）、G1 Region Pinning
+| 23 | 2024.09 | 否 | Markdown 文档注释、ZGC 默认分代、基本类型模式匹配（预览）、`import module`（预览）
+| 24 | 2025.03 | 否 | Stream Gatherers 与 Class-File API 转正、虚拟线程不再因 `synchronized` 被固定、永久禁用 Security Manager
+| 25 | 2025.09 | 是 | LTS；Scoped Values、紧凑对象头、紧凑源文件等特性趋于稳定，AOT 与 JFR 能力增强
+|===
+
+NOTE: JDK 24/25 及之后仍以 6 个月节奏迭代，预览特性会持续调整；升级前请以 OpenJDK 官方 JEP 列表与 Release Notes 为准。
+
+=== 四个 LTS 版本详解
+
+==== JDK 8（2014，使用最广的基座）
+
+- *Lambda 与函数式接口*：`@FunctionalInterface`、`java.util.function`（Predicate/Function/Consumer/Supplier）。
+- *Stream API*：链式过滤/映射/聚合，支持并行流；方法引用 `Class::method`。
+- *新日期时间 API*：`java.time`（`LocalDate` / `LocalDateTime` / `ZonedDateTime` / `Duration` / `DateTimeFormatter`），不可变且线程安全，替代非线程安全的 `SimpleDateFormat` 和难用的 `Date/Calendar`。
+- *Optional*：显式表达「可能为空」，减少 NPE。
+- *接口增强*：`default` 方法、`static` 方法，让集合框架等老接口可以平滑扩展。
+- *JVM 变化*：*永久代 PermGen 移除，改为元空间 Metaspace*（使用本地内存），`-XX:PermSize/MaxPermSize` 失效，缓解 `OOM: PermGen space`。
+- *集合与并发*：`HashMap` 链表过长转红黑树、`ConcurrentHashMap` 改为 CAS + synchronized、`CompletableFuture`、`LongAdder`、`StampedLock`、`Base64`。
+- 默认 GC：Parallel Scavenge + Parallel Old。
+
+==== JDK 11（2018，第二个 LTS）
+
+- *HttpClient 转正*：`java.net.http.HttpClient`，支持 HTTP/2、WebSocket、同步与异步，替代老旧的 `HttpURLConnection`。
+- *移除 Java EE / CORBA 模块*：JAXB、JAX-WS、`@PostConstruct` 等不再内置 → *8 升 11 最常见的编译失败原因*，需显式加依赖。
+- *便利方法*：`String.isBlank/lines/strip/repeat`、`Files.readString/writeString`、`Optional.isEmpty()`；`var` 可用于 Lambda 参数。
+- *单文件源码启动*：`java Hello.java`，无需先 `javac`。
+- *GC 与诊断*：ZGC（实验性，低延迟）、Epsilon GC（无回收，用于性能测试）、JFR 开源；默认 GC 已是 G1（自 JDK9）。
+- TLS 1.3 支持。
+
+==== JDK 17（2021，当前主流生产 LTS）
+
+- *密封类转正*：`sealed` / `permits` / `non-sealed`，精确控制哪些类可以继承。
+- *switch 模式匹配（预览）*、增强伪随机数生成器 `RandomGenerator`、恢复严格浮点语义。
+- *强封装 JDK 内部 API*（JEP 403）：反射访问 `sun.*` 或 `java.lang` 私有成员默认抛 `InaccessibleObjectException`，需要 `--add-opens`。
+- *移除*：Applet API、RMI Activation、实验性 AOT/JIT 编译器；*弃用* Security Manager。
+- *生态基线*：*Spring Boot 3 / Spring Framework 6 最低要求 JDK 17*，这也是大量项目停在 17 的原因。
+
+==== JDK 21（2023，新一代 LTS）
+
+- *虚拟线程转正*（最重要，见下节）。
+- *Sequenced Collections*：`SequencedCollection` / `SequencedSet` / `SequencedMap`，统一 `getFirst/getLast/reversed/addFirst/addLast`，不再为 `LinkedList`/`LinkedHashSet`/`TreeMap` 各记一套 API。
+- *Record Patterns 与 switch 模式匹配转正*：`case` 支持类型匹配、`case null` 与 `when` 守卫，配合 `record` 解构，大幅简化分支代码。
+- *分代 ZGC*：为新生代/老年代分别回收，进一步降低分配压力下的停顿。
+- 字符串模板（预览，后续版本因设计调整暂停预览）、结构化并发、Scoped Values、FFM API、Vector API 仍为预览/孵化。
+- 弃用 Windows 32 位 x86 端口、准备限制动态加载 Agent。
+
+*虚拟线程（Project Loom）要点*：
+
+- 由 JVM 调度的轻量线程，M:N 映射到少量平台线程（*载体线程 carrier thread*）；遇到阻塞 IO 时自动卸载，几 MB 内存即可支撑百万级并发。
+- 创建方式：`Thread.ofVirtual().start(...)` 或 `Executors.newVirtualThreadPerTaskExecutor()`，仍然沿用原有 `Thread` API，改造成本低。
+- 适合 *IO 密集型*（Web 服务、RPC、数据库调用）；*CPU 密集型不会变快*。
+- 注意：*不要池化*（每任务一个虚拟线程）；JDK21 中在 `synchronized` 块内阻塞会 *pin* 住载体线程（可用 `ReentrantLock` 缓解，JDK24 起已改善）；避免海量 `ThreadLocal`（每线程一份副本会放大内存）。
+
+=== 跨版本关键差异与升级注意点
+
+[cols="2,3,4"]
+|===
+| 变化点 | 起始版本 | 影响与应对
+| 默认 GC | JDK9 起 G1 取代 Parallel；JDK14 移除 CMS | 老的 `-XX:+UseConcMarkSweepGC` 在新版直接报错，需清理启动脚本
+| 内部 API 封装 | JDK9 模块化 → JDK16 默认 deny → JDK17 强封装 | 反射访问 `sun.*` 或 JDK 私有成员失败，改用公开 API，`--add-opens` 只作临时过渡
+| Java EE 模块移除 | JDK11 | 补齐 `jaxb-api`、`javax.annotation` 等依赖
+| 默认字符集 | JDK18 起统一 UTF-8 | 依赖平台默认编码（如 GBK）的老代码读写文件会乱码，显式指定 `StandardCharsets.UTF_8`
+| 内存模型 | JDK8 移除 PermGen | `-XX:PermSize` 失效，改用 `-XX:MetaspaceSize/MaxMetaspaceSize`
+| 三方库兼容 | 每个版本 | ASM / CGLIB / ByteBuddy 需支持新 class 版本，否则 `UnsupportedClassVersionError`
+| 框架基线 | JDK17 | Spring Boot 3 / Spring Framework 6 要求 17+；Spring Boot 2 可用 8/11/17
+| 预览特性 | 各版本 | 需 `--enable-preview`，且与编译版本严格一致、跨版本不保证兼容，禁止用于生产
+|===
+
+*class 文件主版本号*：JDK8 = 52、9 = 53、10 = 54、11 = 55，之后每版 +1，17 = 61、21 = 65。看到 `UnsupportedClassVersionError: class file version 61.0 should be 52.0`，含义是「用 JDK8 运行了 JDK17 编译的类」。
+
+*升级检查清单*：
+
+1. 明确目标 LTS：新项目优先 17 或 21；8 → 17 的老系统建议按 8 → 11 → 17 分步升级。
+2. 清理失效的 JVM 参数（`PermSize`、CMS、`PrintGCDetails` 改为 `-Xlog:gc*`）。
+3. 全量升级依赖：Spring、ASM/CGLIB/ByteBuddy、日志、序列化、字节码增强与 Java Agent。
+4. 处理 `IllegalAccessError` / `InaccessibleObjectException`，优先改代码而不是长期靠 `--add-opens`。
+5. 显式指定字符集、时区、Locale，避免默认值变化带来行为差异。
+6. 回归 GC 与性能：默认收集器变化、Metaspace 与堆外内存、ZGC/虚拟线程相关指标。
+7. 全量回归 + 灰度，重点覆盖反射、序列化、加密、日期格式化、动态代理等敏感点。
+
+=== 面试速记
+
+- *JDK 8*：Lambda / Stream / `java.time` / Optional / Metaspace。
+- *JDK 9*：模块化 / G1 默认 / 集合工厂 / 字符串改 `byte[]`。
+- *JDK 11*：HttpClient / 移除 Java EE / ZGC / 单文件启动。
+- *JDK 17*：密封类 / 强封装内部 API / Spring Boot 3 基线。
+- *JDK 21*：虚拟线程 / 有序集合 / 模式匹配转正 / 分代 ZGC。
+- *节奏*：6 个月一版、2 年一个 LTS（8 → 11 → 17 → 21 → 25）。
+
 == 高频真题与参考答案
 
 === 1. String 为什么设计成不可变？
