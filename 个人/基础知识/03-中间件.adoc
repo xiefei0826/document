@@ -113,9 +113,95 @@
 
 === RabbitMQ 核心
 
-- Exchange 类型：direct（精确路由）、fanout（广播）、topic（通配符）、headers。
-- 可靠性：生产者 confirm、消费者手动 ack、队列/消息持久化。
-- 死信队列（DLX）、延迟队列（TTL + DLX 或延迟插件）。
+==== 核心概念与消息流转
+
+- 组件：Producer → *Exchange*（交换机）→ *Binding*（绑定关系）→ *Queue* → Consumer；Connection 之上复用多个轻量 *Channel*，Virtual Host 做逻辑隔离。
+- 流转：生产者把消息发给 Exchange 并带上一个 `routing key`；Exchange 按「*自身类型 + routing key + binding key*」决定投递到哪些队列；*消费者只从队列取消息，完全不感知 Exchange 与 routing key*。
+- 两个关键区别：
+  - *一个队列挂多个消费者 = 竞争消费*：一条消息只会被其中一个消费者拿到（默认轮询，可用 `prefetch` 调节）。
+  - *多个队列绑定同一 Exchange = 每个队列各拿到一份拷贝*：这是「发布订阅」与「工作队列」的根本区别。
+- 若消息发到 Exchange 却 *没有任何队列匹配*，默认直接丢弃；可用 `mandatory=true` + Return 回调，或配置 *备份交换机 Alternate Exchange* 兜底。
+
+==== 四种 Exchange 与 routing key 的作用
+
+`routing key` 是生产者发送消息时附带的一个字符串（AMQP 0-9-1 中上限 255 字节），是 Exchange 做路由决策的依据（headers 类型除外）。不同 Exchange 对它的处理完全不同：
+
+[cols="1,2,3,2"]
+|===
+| Exchange 类型 | 对 routing key | 匹配规则 | 典型场景
+| `direct` | 使用 | routing key 与 binding key *完全相等* 才投递 | 按日志级别 / 业务类型精确分流
+| `fanout` | *忽略* | 不做比较，广播到所有绑定队列 | 广播通知、缓存清理、配置变更
+| `topic` | 使用 | 按 `.` 分词，`*` 匹配一个词，`#` 匹配零到多个词 | 分类订阅、多维路由
+| `headers` | *忽略* | 用消息 headers 属性匹配，`x-match=all`（全部匹配）或 `any`（任一匹配） | 按属性而非 key 路由，性能较差、较少使用
+|===
+
+- *默认交换机*：名字是空字符串 `""`，行为相当于 direct，每个队列会自动以「队列名」作为 binding key 绑定它。简单模式与工作队列模式走的就是它，此时 `routing key` 必须 *等于队列名*。
+- 一个队列可以用 *多个 binding key* 绑定到同一个 Exchange；一条消息也可能同时匹配多个队列，从而被投递多份。
+- topic 通配符示例（`routing key = order.paid.vip`）：
+  - `order.*.vip` ✓（`*` 恰好一个词）
+  - `order.#` ✓（`#` 零到多个词）
+  - `#.vip` ✓
+  - `order.*` ✗（三段不能匹配两段）
+  - 单词以 `.` 分隔，`*` 不能匹配半个词；`*` 与 `#` 只能出现在分词位置。
+
+==== routing key 与 binding key 的区别（易混）
+
+- *routing key*：属于 *消息*，生产者发送时指定，一条消息只有一个。
+- *binding key*：属于 *绑定关系*，队列绑定到 Exchange 时指定，一个队列可以有多个（topic 里就是通配符模式）。
+- Exchange 拿「消息的 routing key」去匹配「各队列的 binding key」；`fanout` / `headers` 下两者都不参与匹配（binding key 通常写空串）。
+- 一句话记：*key 跟着消息走，binding key 写在绑定关系上*。
+
+==== 六种工作模式
+
+1. *简单模式 Simple（Hello World）*
+   - 一个生产者 → 默认交换机 → 一个队列 → 一个消费者；`routing key` 填队列名，无需显式声明 Exchange 与 Binding。
+   - 生产很少直接用，主要用于理解模型。
+
+2. *工作队列 Work Queues（竞争消费者）*
+   - 一个队列挂多个消费者，一条消息 *只被一个消费者* 消费，默认轮询分发（round-robin）。
+   - 用 `basicQos(prefetchCount=1)` + 手动 ack 实现「能者多劳」，避免慢消费者堆积、快消费者空闲。
+   - 场景：耗时任务分发（发邮件、生成报表、图片处理）、削峰。
+
+3. *发布订阅 Publish/Subscribe（fanout）*
+   - Exchange 为 `fanout`，*忽略 routing key*，消息广播到所有绑定队列；每个消费者有自己的队列，各拿到一份完整拷贝。
+   - 场景：一个事件多方消费（下单后同时通知库存、积分、短信、审计）。
+
+4. *路由模式 Routing（direct）*
+   - Exchange 为 `direct`，routing key 与 binding key *精确相等* 才投递。
+   - 例：队列 A 绑 `error`、队列 B 绑 `info` 与 `warn`；发 `error` 只进 A，发 `info` 只进 B。
+   - 场景：按级别 / 类型分流，不同消费者处理不同类别消息。
+
+5. *主题模式 Topics（topic）*
+   - Exchange 为 `topic`，用通配符做模糊匹配，是 direct 的增强。
+   - 例：`log.#` 收全部日志，`log.*.order` 收订单模块各级别日志。
+   - 场景：多维分类订阅，消费者只关心某类消息的子集。
+
+6. *RPC 模式*
+   - 客户端发消息时带 `reply_to`（回调队列名）与 `correlation_id`（请求唯一标识）；服务端处理后把结果发到 `reply_to` 队列并原样带回 `correlation_id`，客户端据此匹配响应。
+   - 注意：RabbitMQ *不内置*请求-响应语义，这是靠两个队列 + 消息属性约定模拟的；生产更常用 HTTP/gRPC，了解原理即可。
+
+补充：官方教程还有 *Publisher Confirms*，属于可靠性机制而非工作模式——生产者开启 confirm，Broker 落盘后回 ack，未确认则重试，是「消息不丢」的关键一环。
+
+==== 工作模式速查表
+
+[cols="2,1,2,2,2"]
+|===
+| 模式 | Exchange | routing key | 一条消息给几个消费者 | 典型场景
+| 简单模式 | 默认 `""` | 队列名 | 1 | 入门 / 单点对点
+| 工作队列 | 默认 `""` | 队列名 | 1（多消费者竞争） | 耗时任务分发、削峰
+| 发布订阅 | `fanout` | 忽略 | 每个队列各一份 | 事件广播、多方消费
+| 路由模式 | `direct` | 精确匹配 | 匹配上的队列各一份 | 按级别 / 类型分流
+| 主题模式 | `topic` | 通配符匹配 | 匹配上的队列各一份 | 多维分类订阅
+| RPC | 默认 / `direct` | 队列名 | 1 | 请求-响应（少用）
+|===
+
+==== 可靠性与路由相关注意点
+
+- *持久化三件套*：Exchange 声明 durable、Queue 声明 durable、消息 `deliveryMode=2`，缺一个重启都可能丢消息。
+- *生产者 confirm* + *消费者手动 ack*：ack 必须在业务处理成功之后；`prefetch` 限制单个消费者未 ack 的消息数，防止囤积。
+- *无匹配队列*：`mandatory=true` + ReturnListener 感知不可路由消息，或用 Alternate Exchange 统一收集，避免静默丢弃。
+- *死信队列 DLX*：来源是消息被 `reject/nack` 且不 requeue、TTL 过期、队列达到长度上限；配合 `x-dead-letter-exchange` 与 `x-dead-letter-routing-key` 转发。
+- *延迟队列*：TTL + DLX，或 `rabbitmq-delayed-message-exchange` 插件；注意 TTL + DLX 方案在队列头部消息未过期时会阻塞后面的消息。
 
 === 如何保证消息不丢、不重、有序
 
