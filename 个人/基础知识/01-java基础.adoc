@@ -73,7 +73,7 @@ void change(Person p) {
 
 === 接口与抽象类
 
-[cols="1,1"]
+[cols="1,2,2"]
 |===
 | 对比项 | 接口 | 抽象类
 | 关键字 | `interface` | `abstract class`
