@@ -341,13 +341,13 @@ NOTE: JDK 24/25 及之后仍以 6 个月节奏迭代，预览特性会持续调�
 
 *升级检查清单*：
 
-1. 明确目标 LTS：新项目优先 17 或 21；8 → 17 的老系统建议按 8 → 11 → 17 分步升级。
-2. 清理失效的 JVM 参数（`PermSize`、CMS、`PrintGCDetails` 改为 `-Xlog:gc*`）。
-3. 全量升级依赖：Spring、ASM/CGLIB/ByteBuddy、日志、序列化、字节码增强与 Java Agent。
-4. 处理 `IllegalAccessError` / `InaccessibleObjectException`，优先改代码而不是长期靠 `--add-opens`。
-5. 显式指定字符集、时区、Locale，避免默认值变化带来行为差异。
-6. 回归 GC 与性能：默认收集器变化、Metaspace 与堆外内存、ZGC/虚拟线程相关指标。
-7. 全量回归 + 灰度，重点覆盖反射、序列化、加密、日期格式化、动态代理等敏感点。
+. 明确目标 LTS：新项目优先 17 或 21；8 → 17 的老系统建议按 8 → 11 → 17 分步升级。
+. 清理失效的 JVM 参数（`PermSize`、CMS、`PrintGCDetails` 改为 `-Xlog:gc*`）。
+. 全量升级依赖：Spring、ASM/CGLIB/ByteBuddy、日志、序列化、字节码增强与 Java Agent。
+. 处理 `IllegalAccessError` / `InaccessibleObjectException`，优先改代码而不是长期靠 `--add-opens`。
+. 显式指定字符集、时区、Locale，避免默认值变化带来行为差异。
+. 回归 GC 与性能：默认收集器变化、Metaspace 与堆外内存、ZGC/虚拟线程相关指标。
+. 全量回归 + 灰度，重点覆盖反射、序列化、加密、日期格式化、动态代理等敏感点。
 
 === 面试速记
 
@@ -360,64 +360,64 @@ NOTE: JDK 24/25 及之后仍以 6 个月节奏迭代，预览特性会持续调�
 
 == 高频真题与参考答案
 
-=== 1. String 为什么设计成不可变？
+=== String 为什么设计成不可变？
 
 - *实现*：`String` 是 `final` 类，内部用 `final` 字符数组（JDK9 起为 `byte[]`），且不提供任何修改内容的方法，所有「修改」都返回新对象。
 - *原因*：
-  1. 线程安全：不可变对象天然线程安全，可被多线程共享。
-  2. 常量池复用：字符串常量池可安全复用同一实例，节省内存。
-  3. 可作 `HashMap/HashSet` 的 key：hash 值稳定（`hashCode` 可缓存）。
-  4. 安全性：防止被篡改（类名、文件路径、网络参数、反射等依赖字符串的场景）。
+  . 线程安全：不可变对象天然线程安全，可被多线程共享。
+  . 常量池复用：字符串常量池可安全复用同一实例，节省内存。
+  . 可作 `HashMap/HashSet` 的 key：hash 值稳定（`hashCode` 可缓存）。
+  . 安全性：防止被篡改（类名、文件路径、网络参数、反射等依赖字符串的场景）。
 
-=== 2. HashMap 的 put/get 流程与哈希冲突如何解决？
+=== HashMap 的 put/get 流程与哈希冲突如何解决？
 
 - *结构*：数组（桶）+ 链表 + 红黑树（JDK8）。
 - *put 流程*：
-  1. 计算扰动后的 hash：`(h = key.hashCode()) ^ (h >>> 16)`。
-  2. `(n-1) & hash` 定位桶下标。
-  3. 桶为空则直接放入；非空则沿链表/红黑树比较（先比 hash，再比 `equals`）。
-  4. key 相同则覆盖 value；否则尾插链表，链表长度 ≥ 8 且桶数 ≥ 64 转红黑树。
-  5. 超过阈值触发 `resize` 扩容。
+  . 计算扰动后的 hash：`(h = key.hashCode()) ^ (h >>> 16)`。
+  . `(n-1) & hash` 定位桶下标。
+  . 桶为空则直接放入；非空则沿链表/红黑树比较（先比 hash，再比 `equals`）。
+  . key 相同则覆盖 value；否则尾插链表，链表长度 ≥ 8 且桶数 ≥ 64 转红黑树。
+  . 超过阈值触发 `resize` 扩容。
 - *get 流程*：同样定位桶，再遍历链表或红黑树查找。
 - *哈希冲突*：链地址法（链表+红黑树），配合扰动函数让哈希分布更均匀，减少碰撞。
 
-=== 3. ArrayList 与 LinkedList 的区别与适用场景？
+=== ArrayList 与 LinkedList 的区别与适用场景？
 
 - *ArrayList*：底层 `Object[]` 数组，随机访问 O(1)，末尾增删均摊 O(1)，中间插入/删除 O(n)（需 `System.arraycopy` 搬迁）。
 - *LinkedList*：双向链表，随机访问 O(n)，头尾增删 O(1)，节点额外存前驱/后继指针、内存开销大。
 - *选型*：读多写少用 `ArrayList`（实际业务绝大多数场景）；仅在频繁头尾增删且很少随机访问时才考虑 `LinkedList`。
 
-=== 4. equals 与 == 的区别？重写 equals 为何要重写 hashCode？
+=== equals 与 == 的区别？重写 equals 为何要重写 hashCode？
 
 - `==`：基本类型比较「值」，引用类型比较「引用地址」。
 - `equals`：`Object` 默认实现就是 `==`，`String`/包装类/集合重写为比较「内容」。
 - *为何同重写 hashCode*：二者有契约——`equals` 相等的对象 `hashCode` 必须相等。`HashMap/HashSet` 先按 `hashCode` 定位桶，再按 `equals` 判等；若只重写 `equals` 不重写 `hashCode`，两个逻辑相等的对象 hash 不同、落在不同桶，导致无法命中、集合出现「重复」元素。
 
-=== 5. 异常体系有哪些？finally 在 return 前还是后执行？
+=== 异常体系有哪些？finally 在 return 前还是后执行？
 
 - `Throwable` → `Error`（JVM 错误，不捕获）+ `Exception`。
 - `Exception` → 受检异常 `CheckedException`（编译期强制处理）+ 非受检 `RuntimeException`。
 - *finally 时机*：`finally` 在 `return` 表达式「求值之后、真正返回之前」执行；`finally` 里的 `return` 会覆盖 `try` 的 `return`；`finally` 抛异常会覆盖原异常；除 `System.exit()` 或 JVM 崩溃外 `finally` 必执行。
 
-=== 6. 抽象类和接口如何选择？
+=== 抽象类和接口如何选择？
 
 - *用抽象类*：存在明显的 is-a 继承关系、需共享实例字段/构造器/非 public 方法或状态时。
 - *用接口*：定义能力/契约（has-a）、需要多实现、解耦模块时；JDK8+ 支持 `default` 方法。
 - *原则*：优先接口、组合优于继承；抽象类用于抽取模板方法。
 
-=== 7. 什么是值传递？Java 参数传递机制是什么？
+=== 什么是值传递？Java 参数传递机制是什么？
 
 - Java 只有*值传递*，无引用传递。
 - 基本类型：传「值副本」，方法内修改不影响外部。
 - 引用类型：传「引用地址的副本」，通过副本可修改指向的*对象内容*（会生效）；但让副本重新指向新对象（`p = new Person()`）不影响外部引用。
 
-=== 8. final、finally、finalize 的区别？
+=== final、finally、finalize 的区别？
 
 - `final`：关键字，修饰类（不可继承）、方法（不可重写）、变量（不可变）。
 - `finally`：异常处理块，保证资源释放/收尾，必执行。
 - `finalize()`：`Object` 方法，GC 回收前可能被调用，JDK9 已废弃、不可靠，绝不用它做资源清理。
 
-=== 9. 谈谈反射与动态代理的原理与应用。
+=== 谈谈反射与动态代理的原理与应用。
 
 - *反射*：运行时获取类的元信息（`Class.forName()`、`getDeclaredMethods/Fields/Constructors`）、动态创建对象、调用方法、访问私有成员（`setAccessible(true)`）。应用：Spring IoC 注入、ORM、序列化。
 - *动态代理*：
@@ -425,7 +425,7 @@ NOTE: JDK 24/25 及之后仍以 6 个月节奏迭代，预览特性会持续调�
   - CGLIB：基于继承，运行时生成子类，可代理无接口的类。
   - 应用：Spring AOP、RPC 框架、事务/日志/权限切面。
 
-=== 10. BIO、NIO、AIO 的区别？为什么 Netty 用 NIO？
+=== BIO、NIO、AIO 的区别？为什么 Netty 用 NIO？
 
 - *BIO*：阻塞 I/O，一个连接一个线程，`InputStream/OutputStream`，连接多时线程开销大。
 - *NIO*：非阻塞，`Channel + Buffer + Selector` 多路复用，单线程可管理大量连接。

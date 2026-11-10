@@ -22,7 +22,7 @@
 
 === 对象创建过程
 
-1. 类加载检查 → 2. 分配内存（指针碰撞/空闲列表）→ 3. 初始化零值 → 4. 设置对象头 → 5. 执行 `<init>`。
+. 类加载检查 → 2. 分配内存（指针碰撞/空闲列表）→ 3. 初始化零值 → 4. 设置对象头 → 5. 执行 `<init>`。
 - 分配内存并发安全：CAS + 失败重试（TLAB 线程本地分配缓冲优先）。
 
 === 对象内存布局
@@ -280,11 +280,11 @@ jcmd <pid> VM.native_memory summary                # 需先开 NMT，查看堆�
 
 === 分析 heap dump 的方法（关键）
 
-1. 用 MAT 打开，先看 *Leak Suspects* 自动报告，再看 *Dominator Tree* 找出支配堆的大对象。
-2. Histogram 按 *Retained Heap*（保留堆）排序，不要只看 Shallow Heap（对象自身大小）——集合类自身很小，却能持有海量元素。
-3. 对可疑对象查 *Path to GC Roots*，排除弱/软/虚引用，只看 *强引用链*，找到持有者：常见是 `static` 集合、单例缓存、`ThreadLocal`、线程栈局部变量、未注销的监听器/回调。
-4. *对比两次 dump*（间隔一段时间、流量相近时各取一次）：用 MAT 的 compare 功能看哪些类的实例数持续增长，增长的就是泄漏对象，比单次 dump 更有说服力。
-5. 结合业务：最近是否发布、是否有大促/批量任务、是否新增了本地缓存或导出功能。
+. 用 MAT 打开，先看 *Leak Suspects* 自动报告，再看 *Dominator Tree* 找出支配堆的大对象。
+. Histogram 按 *Retained Heap*（保留堆）排序，不要只看 Shallow Heap（对象自身大小）——集合类自身很小，却能持有海量元素。
+. 对可疑对象查 *Path to GC Roots*，排除弱/软/虚引用，只看 *强引用链*，找到持有者：常见是 `static` 集合、单例缓存、`ThreadLocal`、线程栈局部变量、未注销的监听器/回调。
+. *对比两次 dump*（间隔一段时间、流量相近时各取一次）：用 MAT 的 compare 功能看哪些类的实例数持续增长，增长的就是泄漏对象，比单次 dump 更有说服力。
+. 结合业务：最近是否发布、是否有大促/批量任务、是否新增了本地缓存或导出功能。
 
 === 常见原因与解决方案
 
@@ -316,7 +316,7 @@ jcmd <pid> VM.native_memory summary                # 需先开 NMT，查看堆�
 
 == 高频真题与参考答案
 
-=== 1. 描述 JVM 运行时数据区，各区域作用与异常？
+=== 描述 JVM 运行时数据区，各区域作用与异常？
 
 - *堆*：对象与数组，GC 主战场，分新生代 + 老年代；溢出抛 `OutOfMemoryError: Java heap space`。
 - *虚拟机栈*：线程私有，栈帧存局部变量表/操作数栈/动态链接/返回地址；过深抛 `StackOverflowError`。
@@ -325,81 +325,81 @@ jcmd <pid> VM.native_memory summary                # 需先开 NMT，查看堆�
 - *方法区*：JDK8 起为元空间（本地内存），存类信息/常量/静态变量；溢出抛 `OutOfMemoryError: Metaspace`。
 - *运行时常量池*：字符串常量池 JDK7 移入堆。
 
-=== 2. 判断对象是否存活的方式？四种引用区别？
+=== 判断对象是否存活的方式？四种引用区别？
 
 - *引用计数法*：有循环引用问题，JVM 未采用。
 - *可达性分析*：从 GC Roots 出发不可达即判定可回收。
 - *四种引用*：强引用（`new`，永不回收）、软引用（内存不足才回收，适合缓存）、弱引用（下次 GC 必回收）、虚引用（仅用于回收跟踪，需配合引用队列）。
 
-=== 3. 垃圾回收算法有哪些？分代收集如何设计？
+=== 垃圾回收算法有哪些？分代收集如何设计？
 
 - 算法：标记-清除（有碎片）、标记-复制（新生代，两 Survivor 交替）、标记-整理（老年代，无碎片）。
 - 分代：新生代对象朝生夕死用「复制」，老年代存活率高用「标记-整理/清除」；Minor GC 存活对象年龄递增，达到阈值晋升老年代。
 
-=== 4. G1 与 CMS 的区别？为什么 G1 成为默认？
+=== G1 与 CMS 的区别？为什么 G1 成为默认？
 
 - CMS：标记-清除，低停顿但有碎片、可能并发失败回退 Full GC、需多次 STW、参数复杂。
 - G1：将堆划分为等大 Region，按回收价值优先回收垃圾最多的分区（Garbage First），可预测停顿（`-XX:MaxGCPauseMillis`），标记-复制整体无碎片，支持大堆；JDK9 起默认。
 - 原因：CMS 已废弃（JDK9 标记、JDK14 移除），G1 兼顾吞吐与延迟且停顿可控。
 
-=== 5. 类加载过程与双亲委派模型？如何打破？
+=== 类加载过程与双亲委派模型？如何打破？
 
 - 过程：加载 → 验证 → 准备（静态变量赋默认值）→ 解析（符号引用转直接引用）→ 初始化（执行 `<clinit>`）。
 - 双亲委派：类加载器先委派父加载器，父能加载则父加载，否则子加载；防止核心类被篡改。
 - 打破：Tomcat 各 WebApp 隔离、JDBC SPI（线程上下文类加载器）、OSGi、热部署。
 
-=== 6. synchronized 底层如何实现？锁升级过程？
+=== synchronized 底层如何实现？锁升级过程？
 
 - 底层：基于对象头 Mark Word + Monitor，字节码 `monitorenter/monitorexit`。
 - 锁升级：偏向锁（无竞争，记录线程 ID）→ 轻量级锁（CAS 自旋）→ 重量级锁（膨胀为 Monitor，线程阻塞）。竞争激烈则膨胀，不降级。
 - 优化：锁消除、锁粗化、自旋锁。
 
-=== 7. volatile 与 synchronized 的区别？
+=== volatile 与 synchronized 的区别？
 
 - `volatile`：仅保证*可见性*与*有序性*（禁止重排序），不保证原子性；轻量，不能保证复合操作（`i++`）安全。
 - `synchronized`：保证*原子性 + 可见性 + 有序性*，重量级，会阻塞线程、开销更大。
 - 适用：`volatile` 用于状态标志/双重检查锁；`synchronized` 用于需要互斥的临界区。
 
-=== 8. AQS 的原理？ReentrantLock 如何实现？
+=== AQS 的原理？ReentrantLock 如何实现？
 
 - AQS（`AbstractQueuedSynchronizer`）：用 `volatile int state` 表示锁状态 + 一个 CLH 双向队列管理等待线程；`tryAcquire/tryRelease` 由子类实现，入队/唤醒由 AQS 完成。
 - `ReentrantLock`：`Sync` 继承 AQS，`state=0` 未加锁，加锁 CAS 置 1 并记录持有线程（可重入则 state 累加），失败则入队阻塞；解锁递减 state，为 0 时唤醒后继。
 
-=== 9. ThreadLocal 内存泄漏原因与解决方案？
+=== ThreadLocal 内存泄漏原因与解决方案？
 
 - 结构：`Thread.threadLocals` 是 `ThreadLocalMap`，key 是弱引用 `ThreadLocal`，value 强引用。
 - 泄漏原因：`ThreadLocal` 被 GC 后 key 变 null，但 value 仍被线程强引用，线程池线程长期存活导致 value 无法回收。
 - 解决：用完必须 `remove()`；JDK 在 `set/get` 时会清理 key 为 null 的脏 entry。
 
-=== 10. 线程池参数与工作流程？如何合理设置线程数？
+=== 线程池参数与工作流程？如何合理设置线程数？
 
 - 参数：核心线程数、最大线程数、存活时间、工作队列、线程工厂、拒绝策略。
 - 流程：任务先核心线程 → 满则入队列 → 队列满则开新线程到最大数 → 仍满走拒绝策略。
 - 线程数：CPU 密集型 `N+1`；IO 密集型 `2N`（或按 `N * (1 + 等待/计算时间比)`），需实测调优；显式 `ThreadPoolExecutor` 而非 `Executors`。
 
-=== 11. HashMap 底层结构与扩容机制？为什么线程不安全？
+=== HashMap 底层结构与扩容机制？为什么线程不安全？
 
 - 结构：数组 + 链表 + 红黑树。
 - 扩容：容量 ×2，`(n-1)&hash` 重定位，高位 0 留原位、1 移「原下标 + 旧容量」。
 - 不安全：JDK7 头插法扩容可能成环（死循环）、数据覆盖、`size++` 丢失更新；JDK8 仍存在并发写覆盖。
 
-=== 12. ConcurrentHashMap JDK7 与 JDK8 实现差异？
+=== ConcurrentHashMap JDK7 与 JDK8 实现差异？
 
 - JDK7：`Segment` 分段锁（继承 `ReentrantLock`），默认 16 段，锁粒度大。
 - JDK8：`CAS + synchronized` 锁单个桶头节点，粒度更细；链表过长转红黑树；计数用类似 `LongAdder` 的分段累加；`get` 无锁 volatile 读。
 
-=== 13. 什么是 CAS？ABA 问题如何解决？
+=== 什么是 CAS？ABA 问题如何解决？
 
 - CAS（Compare And Swap）：比较当前值等于预期值则原子替换，否则失败，底层 `Unsafe` + CPU `cmpxchg`。
 - 问题：ABA（值 A→B→A 无法察觉）、自旋 CPU 开销、只能保证单变量原子。
 - 解决 ABA：加版本号，`AtomicStampedReference`/`AtomicMarkableReference`。
 
-=== 14. CompletableFuture 如何做异步编排？
+=== CompletableFuture 如何做异步编排？
 
 - 核心方法：`thenApply`（有返回值）、`thenAccept`/`thenRun`、`thenCompose`（组合依赖）、`thenCombine`（并行合并）、`allOf`/`anyOf`（多任务聚合）、`exceptionally`/`handle`（异常处理）。
 - 场景：串行依赖用 `thenCompose`，并行无依赖用 `thenCombine`，多任务等待用 `allOf`。
 
-=== 15. 线上 CPU 飙高 / OOM 如何排查？
+=== 线上 CPU 飙高 / OOM 如何排查？
 
 - *CPU 飙高*：`top` 找到高 CPU 进程 → `top -Hp <pid>` 找高 CPU 线程 → `printf '%x'` 把线程 id 转十六进制得到 nid → `jstack <pid>` 中按 nid 找线程栈，定位死循环、频繁 GC、锁竞争或序列化热点。
 - *OOM 排查*：先保留现场——`-XX:+HeapDumpOnOutOfMemoryError` 自动 dump + gc.log，进程还活着时用 `jmap -dump:format=b,file=... <pid>` 或 `jcmd <pid> GC.heap_dump` 手动导出 → `jstat -gcutil` 看老年代与 FGC 趋势、`jmap -histo` 找异常实例 → 用 MAT 分析 dump 的 Dominator Tree 与 *Path to GC Roots* 找强引用持有者 → *对比两次 dump* 确认哪些对象持续增长 → 区分「泄漏 / 一次性大对象 / 参数 / 堆外 / 容器 OOMKilled」再对症下药。

@@ -159,15 +159,15 @@ CREATE TABLE t_local_message (
 
 === 选型速查
 
-1. 单库单服务 → 本地事务，不要引入分布式事务。
-2. 跨库、同一应用、同机房、必须强一致 → XA（Seata XA / ShardingSphere XA）。
-3. Java 微服务、以关系库为主、想快速接入 → Seata AT。
-4. 金融/资金/库存，需要资源预留且性能要求高 → TCC（Seata TCC / DTM）。
-5. 长流程、跨外部系统（第三方支付、物流） → Saga（Seata Saga / Temporal / Camunda）。
-6. 异步解耦、允许秒级延迟 → RocketMQ 事务消息 或 本地消息表。
-7. 对外通知、允许更长时间不一致 → 最大努力通知 + 对账兜底。
-8. 非 Java / 多语言栈 → DTM，或 MQ + 幂等自研。
-9. 无论哪种 → 幂等、重试、监控告警、对账兜底都必须有。
+. 单库单服务 → 本地事务，不要引入分布式事务。
+. 跨库、同一应用、同机房、必须强一致 → XA（Seata XA / ShardingSphere XA）。
+. Java 微服务、以关系库为主、想快速接入 → Seata AT。
+. 金融/资金/库存，需要资源预留且性能要求高 → TCC（Seata TCC / DTM）。
+. 长流程、跨外部系统（第三方支付、物流） → Saga（Seata Saga / Temporal / Camunda）。
+. 异步解耦、允许秒级延迟 → RocketMQ 事务消息 或 本地消息表。
+. 对外通知、允许更长时间不一致 → 最大努力通知 + 对账兜底。
+. 非 Java / 多语言栈 → DTM，或 MQ + 幂等自研。
+. 无论哪种 → 幂等、重试、监控告警、对账兜底都必须有。
 
 === 落地注意点（面试高频）
 
@@ -266,14 +266,14 @@ TIP: 算法决定「突发流量怎么处理」，组件决定「在哪一层生
 
 === 选型建议
 
-1. 新项目 Spring Boot 2/3、不需要控制台、只要熔断与重试 → *Resilience4j*。
-2. 国内 Spring Cloud Alibaba / Dubbo、要 Dashboard 与动态规则、要热点参数和系统保护 → *Sentinel*。
-3. 存量 Hystrix → 迁移到 Resilience4j 或 Sentinel，不要再新增依赖。
-4. 只想给单个方法/接口限个速 → *Guava RateLimiter*（务必记住是单机维度）。
-5. 集群精确配额 → *Redis + Lua*（简单可控）或 *Sentinel 集群流控*（有控制台）。
-6. 统一入口挡总量 → *Nginx*（最外层最省）或 *Gateway / APISIX*（需要动态规则与配额维度）。
-7. 多语言异构、追求业务零侵入 → *Istio*，但要先评估运维与延迟成本。
-8. *组合拳*：Nginx 挡总量 → 网关按租户/接口配额 → SDK 做资源级熔断与热点参数限流 → 系统自适应保护兜底。
+. 新项目 Spring Boot 2/3、不需要控制台、只要熔断与重试 → *Resilience4j*。
+. 国内 Spring Cloud Alibaba / Dubbo、要 Dashboard 与动态规则、要热点参数和系统保护 → *Sentinel*。
+. 存量 Hystrix → 迁移到 Resilience4j 或 Sentinel，不要再新增依赖。
+. 只想给单个方法/接口限个速 → *Guava RateLimiter*（务必记住是单机维度）。
+. 集群精确配额 → *Redis + Lua*（简单可控）或 *Sentinel 集群流控*（有控制台）。
+. 统一入口挡总量 → *Nginx*（最外层最省）或 *Gateway / APISIX*（需要动态规则与配额维度）。
+. 多语言异构、追求业务零侵入 → *Istio*，但要先评估运维与延迟成本。
+. *组合拳*：Nginx 挡总量 → 网关按租户/接口配额 → SDK 做资源级熔断与热点参数限流 → 系统自适应保护兜底。
 
 === 落地注意点（熔断限流）
 
@@ -346,6 +346,171 @@ TIP: 算法决定「突发流量怎么处理」，组件决定「在哪一层生
 - 漏桶：恒定速率，应对突发差。
 - 令牌桶：允许一定突发，`Guava RateLimiter`、Redis + Lua。
 
+== 字段级权限设计（列级数据权限）
+
+典型场景：*销售不能看进货价*、客服只能看手机号后四位、普通员工看不到同事薪资、导出报表按角色脱敏。这类需求也叫 *列级权限 / 字段级数据权限 / 动态脱敏*。
+
+先把它放进权限体系里定位，三层是叠加关系：
+
+- *功能权限*：能不能访问这个菜单/接口。
+- *行级权限*：能不能看到这一行（如只看本部门订单）。
+- *字段级权限*：这一行里 *哪些列* 能看、能改 ← 本节主题。
+
+执行顺序一般是：功能权限 → 行级过滤 → 字段裁剪/脱敏。
+
+=== 权限模型与配置设计
+
+- 用 *RBAC* 表达「角色 → 字段」，用 *ABAC* 补条件（部门、岗位、数据归属、金额区间、环境），组合起来最灵活。
+- 配置维度六要素：*资源*（哪个实体/接口/报表）、*字段*（哪个列，可支持字段组与通配）、*主体*（角色/用户/部门/岗位/租户）、*条件*（ABAC 表达式）、*效果*（可见 / 隐藏 / 脱敏 / 只读 / 可写）、*优先级*。
+- *默认策略必须是「拒绝」*：敏感字段登记后默认不可见，只有显式授权才放行（最小权限）；反过来「默认全可见、逐个配黑名单」一定会有漏配。
+- *冲突合并*：用户多角色时，敏感字段按 *DENY 优先 / 最严格优先*，显式拒绝高于允许。
+
+配置表示例（规则表 + 字段元数据表）：
+
+[source,sql]
+----
+CREATE TABLE t_sensitive_field (
+  field_code     VARCHAR(64) PRIMARY KEY COMMENT '字段码，如 goods.purchase_price',
+  table_name     VARCHAR(64) NOT NULL,
+  column_name    VARCHAR(64) NOT NULL,
+  default_effect VARCHAR(16) NOT NULL DEFAULT 'DENY' COMMENT '默认拒绝',
+  mask_type      VARCHAR(16) NOT NULL DEFAULT 'HIDE' COMMENT 'HIDE/NULL/PARTIAL/CONST/HASH',
+  data_level     VARCHAR(16) NOT NULL COMMENT '敏感等级 L1~L4',
+  created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE t_field_permission (
+  id             BIGINT PRIMARY KEY AUTO_INCREMENT,
+  resource_code  VARCHAR(64) NOT NULL COMMENT '资源码，如 goods:detail / goods:export',
+  field_code     VARCHAR(64) NOT NULL COMMENT '关联 t_sensitive_field',
+  subject_type   VARCHAR(16) NOT NULL COMMENT 'ROLE/USER/DEPT/POST/TENANT',
+  subject_id     VARCHAR(64) NOT NULL,
+  effect         VARCHAR(16) NOT NULL COMMENT 'ALLOW/DENY/MASK/READONLY/WRITABLE',
+  mask_type      VARCHAR(16) NULL,
+  condition_expr VARCHAR(256) NULL COMMENT 'ABAC 条件，如 dept == owner_dept',
+  priority       INT NOT NULL DEFAULT 0,
+  enabled        TINYINT NOT NULL DEFAULT 1,
+  created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_rule (resource_code, field_code, subject_type, subject_id)
+) ENGINE=InnoDB;
+----
+
+「销售不能看进货价」的配置：
+
+[cols="2,2,2,3"]
+|===
+| 主体 | effect | mask_type | 结果
+| `role:sales` | `DENY` | `HIDE` | 返回体中直接移除 `purchasePrice`
+| `role:sales_manager` | `MASK` | `PARTIAL` | 只显示价格区间或打码
+| `role:purchase` | `ALLOW` | - | 完整可见
+| `role:finance` | `ALLOW` | - | 完整可见
+| 其它未配置 | `DENY`（默认） | `HIDE` | 最小权限兜底
+|===
+
+配置存放与生效：规则放 *配置中心*（Nacos / Apollo）或 DB，应用启动时加载 + 本地缓存（Caffeine），变更通过监听刷新；*不要每次请求查库*。角色变动时要主动失效用户维度的权限计算结果缓存。
+
+=== 实现方案对比：在哪一层做
+
+[cols="2,3,3,4"]
+|===
+| 层次 | 做法 | 优点 | 缺点
+| 前端 | 隐藏表格列、不渲染 | 实现简单、体验好 | *完全不安全*：接口已返回数据，抓包或改前端即可拿到；只能作为展示配合
+| 应用层·序列化出口 | Jackson `@JsonView`、自定义 Serializer、`ResponseBodyAdvice` 统一过滤 | 侵入小、按接口灵活、可统一收口所有出参 | 敏感数据已被查进内存；导出、日志、消息容易漏；需框架强制约束
+| 应用层·VO 分层 | 按角色返回不同 VO / DTO | 类型安全、清晰 | 角色 × 接口组合爆炸，维护成本高
+| ORM 层·动态列 | MyBatis `<if>` 控制 `SELECT` 列、JPA Projection | *SQL 层就不取敏感列*，内存里也没有，实现可靠 | 要为每个查询显式写列；禁止 `SELECT *`；动态 SQL 文本变多
+| ORM 层·拦截器 | MyBatis Interceptor 改写 SQL 列、TypeHandler 脱敏 | 统一收口、业务无感 | 改写复杂 SQL（别名、join、子查询、函数）风险高；影响 SQL 缓存与执行计划
+| 数据库视图 | 按角色建 `view_sales_goods`（不含 `purchase_price`） | DB 层强约束、性能好、应用无感 | 视图随角色膨胀；分库分表/跨库难；DDL 管理重
+| 数据库列级授权 | `GRANT SELECT(col1, col2) ON t TO role` | 约束最强 | 应用通常用 *统一连接池账号*，DB 用户 ≠ 业务用户，实际基本不可行
+| 数据库动态脱敏 | Oracle Data Redaction、SQL Server DDM、部分云数据库 | 对应用透明、漏改风险低 | 依赖特定/商业数据库；策略表达力有限；MySQL 社区版无原生能力
+| SQL 网关 / 代理 | ShardingSphere 脱敏、自研 SQL 解析改写 | 跨语言统一 | 架构复杂，SQL 解析兼容性风险
+|===
+
+=== 推荐落地组合
+
+. *登记元数据*：把敏感字段（含等级、默认策略、脱敏方式）集中登记，作为唯一事实源。
+. *配置规则*：配置中心维护「主体 × 资源 × 字段 → 效果」，本地缓存 + 变更监听。
+. *双保险执行*：
+   - *SQL 层做列裁剪*（动态列或视图），敏感数据根本不进内存；
+   - *序列化出口再做一次过滤/脱敏*（`ResponseBodyAdvice` 统一收口），兜住缓存对象、RPC 返回、第三方数据等来源。
+. *全链路一致*：列表、详情、导出、报表、打印、日志、消息推送、开放 API、搜索引擎索引、数据同步都走同一套「可见字段集合」。
+. *审计与测试*：记录谁在何时访问了哪个敏感字段；把字段权限纳入自动化用例，防止新增接口漏配。
+
+=== 端到端示例：销售不能看进货价
+
+*1）标注字段*
+
+[source,java]
+----
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.FIELD)
+public @interface FieldAuth {
+    String code();
+    MaskType mask() default MaskType.HIDE;
+}
+
+public class GoodsVO {
+    private Long id;
+    private String name;
+    private BigDecimal salePrice;
+
+    @FieldAuth(code = "goods.purchase_price")
+    private BigDecimal purchasePrice;
+}
+----
+
+*2）SQL 层裁剪列*（MyBatis 动态列，比运行时改写 SQL 更稳妥）
+
+[source,xml]
+----
+<select id="getGoods" resultType="GoodsVO">
+    SELECT id, name, sale_price
+    <if test="perm.canSeePurchasePrice">, purchase_price</if>
+    FROM t_goods WHERE id = #{id}
+</select>
+----
+
+*3）出口统一过滤*（`ResponseBodyAdvice` 示意，按注解与可见字段集合裁剪）
+
+[source,java]
+----
+Set<String> visible = permission.visibleFields("goods:detail", currentUser());
+Map<String, Object> body = toMap(result);
+for (FieldMeta meta : authFields(result.getClass())) {
+    if (!visible.contains(meta.code())) {
+        body.remove(meta.fieldName());          // HIDE
+        // 或 body.put(meta.fieldName(), mask(value, meta.maskType()));  // MASK/NULL/CONST
+    }
+}
+return body;
+----
+
+*4）写权限同样要收口*：不能把请求体直接透传给 `update`；按「可写字段白名单」拷贝，否则销售虽看不到进货价，却可能通过更新接口改掉它。
+
+[source,java]
+----
+// 反例：BeanUtils.copyProperties(request, entity) —— 会把受限字段一起写入
+BeanUtils.copyProperties(request, entity, writableFields(perm)); // 白名单拷贝
+----
+
+*5）防推断*：销售被禁止按 `purchase_price` *排序、过滤、范围查询、聚合*（如 `SUM`/`AVG`），否则可用二分或聚合结果反推出真实值。字段权限必须同时约束 `WHERE` / `ORDER BY` / `GROUP BY` / 函数参数，以及搜索、导出、报表条件。
+
+=== 容易忽略的坑（面试高频）
+
+- *前端隐藏不等于权限*：接口返回了就是泄露，必须服务端控制。
+- *禁止 `SELECT *`*：新加的敏感列会被悄悄带出来；缓存中的完整对象、RPC 返回值也不能直接透传。
+- *越权推断*：字段不返回，但允许按它排序/过滤/聚合/模糊搜索，仍能推出值；ES 索引里同步了敏感字段也会泄露。
+- *出口不止 HTTP*：Excel 导出、报表、打印、日志（`log.info("{}", vo)`）、MQ 消息、开放平台 API、数据同步、BI 数据集都要过同一套规则。
+- *读权限 ≠ 写权限*：还要控制新增/修改/批量导入/Excel 模板是否包含该列。
+- *多角色叠加*：显式 `DENY` 优先；别用「有任一角色允许就放行」。
+- *分页与聚合口径*：先做列裁剪再统计，可能导致平均值/总额按错误口径计算；明确「按可见数据算」还是「按全量算但只展示脱敏结果」。
+- *缓存与性能*：规则要缓存；动态列会让 SQL 文本变多、降低执行计划缓存命中率，可按有限几种「权限组合」枚举 SQL。
+- *配置变更生效*：配置中心推送 + 本地缓存失效，用户角色调整后要立刻生效，避免权限残留。
+- *审计与回归*：敏感字段访问留痕；新增接口、新增字段要有自动化用例校验，最怕「新加的报表漏配」。
+
+=== 面试答题框架
+
+*分层定位（功能/行/字段）→ 元数据登记 + 默认拒绝 → 配置建模（主体×资源×字段×条件×效果）→ 选实现层次（SQL 列裁剪 + 出口脱敏双保险）→ 全链路一致（导出/日志/报表/搜索）→ 防越权推断 → 审计与自动化回归*。
+
 == 设计原则与权衡
 
 - 三高（高性能/高可用/高扩展）与成本权衡。
@@ -368,25 +533,25 @@ SDD（Spec-Driven Development，规格驱动开发）：先产出结构化、可
 
 以 GitHub Spec Kit / AWS Kiro 为代表，通常分五个阶段：
 
-1. *Specify（规格）*：写清目标、用户故事、范围边界、非功能约束、验收标准 → `spec.md`。
-2. *Plan（计划）*：技术选型、架构方案、影响范围、风险与备选 → `plan.md`，人工评审。
-3. *Tasks（任务）*：把计划拆成可独立验证的小任务清单 → `tasks.md`。
-4. *Implement（实现）*：按任务逐个让 AI 生成代码，小步提交、可回滚。
-5. *Verify（验证）*：对照验收标准测试与 Review，把偏差回填规格。
+. *Specify（规格）*：写清目标、用户故事、范围边界、非功能约束、验收标准 → `spec.md`。
+. *Plan（计划）*：技术选型、架构方案、影响范围、风险与备选 → `plan.md`，人工评审。
+. *Tasks（任务）*：把计划拆成可独立验证的小任务清单 → `tasks.md`。
+. *Implement（实现）*：按任务逐个让 AI 生成代码，小步提交、可回滚。
+. *Verify（验证）*：对照验收标准测试与 Review，把偏差回填规格。
 
 - Kiro 对应三段式：Requirements（用 EARS 语法写验收标准）→ Design → Tasks。
 - 关键点：每个阶段都要「人审确认」后再进入下一阶段，不让 AI 一路自由发挥。
 
 === 核心原则
 
-1. *规格先行*：先写清楚「做什么、为什么、做到什么算完成」，再写代码。
-2. *单一事实源*：规格是唯一权威，代码、测试、文档与它对齐；规格变更要版本化。
-3. *可验收*：需求必须带明确验收标准（输入/输出/边界/异常），模糊需求不进实现。
-4. *分层拆解*：Epic → Spec → Plan → Tasks 逐层收敛，避免把大需求一次性丢给 AI。
-5. *小步可验证*：一次一个可验证的增量，完成后立刻编译/测试/Review，再继续。
-6. *人掌舵、AI 执行*：架构决策、技术选型、取舍由人确认；AI 负责实现与琐碎工作。
-7. *约束上下文*：用规则文件固定技术栈、代码规范、目录结构、禁区，减少臆造。
-8. *可追溯*：规格、计划、任务与提交记录关联，变更有据可查，便于回滚。
+. *规格先行*：先写清楚「做什么、为什么、做到什么算完成」，再写代码。
+. *单一事实源*：规格是唯一权威，代码、测试、文档与它对齐；规格变更要版本化。
+. *可验收*：需求必须带明确验收标准（输入/输出/边界/异常），模糊需求不进实现。
+. *分层拆解*：Epic → Spec → Plan → Tasks 逐层收敛，避免把大需求一次性丢给 AI。
+. *小步可验证*：一次一个可验证的增量，完成后立刻编译/测试/Review，再继续。
+. *人掌舵、AI 执行*：架构决策、技术选型、取舍由人确认；AI 负责实现与琐碎工作。
+. *约束上下文*：用规则文件固定技术栈、代码规范、目录结构、禁区，减少臆造。
+. *可追溯*：规格、计划、任务与提交记录关联，变更有据可查，便于回滚。
 
 === 注意事项与常见坑
 
@@ -420,44 +585,44 @@ SDD（Spec-Driven Development，规格驱动开发）：先产出结构化、可
 
 === 落地清单（可直接套用）
 
-1. 写 spec：目标、范围、明确不做的事、接口/数据约束、验收标准。
-2. 出 plan：方案、影响面、风险、备选，人工评审确认。
-3. 拆 tasks：可独立验证的小任务，标注依赖与验收点。
-4. 配 rules：技术栈、规范、目录、禁区、构建与测试命令。
-5. 逐任务实现：Plan → 人工确认 → 生成 → 编译/测试 → Review → 提交。
-6. 回填规格：需求变化先改 spec，始终保持文档与代码一致。
+. 写 spec：目标、范围、明确不做的事、接口/数据约束、验收标准。
+. 出 plan：方案、影响面、风险、备选，人工评审确认。
+. 拆 tasks：可独立验证的小任务，标注依赖与验收点。
+. 配 rules：技术栈、规范、目录、禁区、构建与测试命令。
+. 逐任务实现：Plan → 人工确认 → 生成 → 编译/测试 → Review → 提交。
+. 回填规格：需求变化先改 spec，始终保持文档与代码一致。
 
 == 高频真题与参考答案
 
-=== 1. 谈谈你对 CAP 和 BASE 的理解？
+=== 谈谈你对 CAP 和 BASE 的理解？
 
 - CAP：一致性、可用性、分区容错，三者不可兼得，网络分区（P）必选；分区发生时在 C/A 间取舍，CP 如 ZK/etcd、AP 如 Eureka。
 - BASE：基本可用、软状态、最终一致，是 AP 的工程折中，允许短暂不一致、通过异步/补偿最终一致。
 
-=== 2. 分布式事务有哪些方案？如何选型？
+=== 分布式事务有哪些方案？如何选型？
 
 - 方案：2PC/3PC（强一致）、TCC（Try-Confirm-Cancel）、Saga（补偿）、本地消息表、事务消息（RocketMQ 半消息）、最大努力通知 + 对账。
 - 选型：单库用本地事务；跨库跨服务优先最终一致——可回滚业务用 TCC，长事务用 Saga，消息驱动用事务消息 + 本地消息表；能用幂等+重试+补偿就不用强一致。
 - 组件：Seata（AT/TCC/Saga/XA，TC + TM + RM 三角色）、DTM（跨语言）、RocketMQ 事务消息、Atomikos/Narayana（JTA-XA）、ShardingSphere XA、Camunda/Temporal（Saga 编排）；详见「分布式事务：常用组件与实现方式」。
 
-=== 3. 微服务如何拆分？如何治理？
+=== 微服务如何拆分？如何治理？
 
 - 拆分：单一职责、高内聚低耦合、按业务域（DDD 限界上下文），粒度适中避免过度拆分。
 - 治理：注册中心（Nacos/Eureka）、配置中心（Nacos/Apollo）、网关（Gateway）、负载均衡、熔断限流降级（Sentinel）、链路追踪（SkyWalking）。
 
-=== 4. 熔断、降级、限流的区别与实现？
+=== 熔断、降级、限流的区别与实现？
 
 - 熔断：下游失败率超阈值打开熔断器快速失败，防雪崩（Sentinel/Resilience4j）。
 - 降级：非核心功能关闭或兜底，保核心链路。
 - 限流：控制请求速率，令牌桶/漏桶/滑动窗口（网关/单机，Guava RateLimiter/Sentinel）。
 - 组件取舍：Hystrix 已停维；Resilience4j 轻量但无控制台与集中规则；Sentinel 功能最全、有 Dashboard 但要部署控制台并持久化规则；网关层 Nginx/Gateway/APISIX 挡总量，Mesh 层 Istio 零侵入但运维重。详见「熔断与限流：常用组件及优缺点」。
 
-=== 5. 如何保证接口幂等？
+=== 如何保证接口幂等？
 
 - 定义：同一请求重复执行结果一致。
 - 方案：数据库唯一索引、Redis `setnx`、状态机（非法转移拒绝）、token 防重复提交、乐观锁（version）。
 
-=== 6. 如何设计一个秒杀系统？
+=== 如何设计一个秒杀系统？
 
 - 前端：静态化 + CDN、按钮防抖。
 - 网关：限流、风控、校验。
@@ -465,55 +630,63 @@ SDD（Spec-Driven Development，规格驱动开发）：先产出结构化、可
 - 防超卖：Redis `decr`/Lua 判断 + DB 乐观锁兜底。
 - 削峰：消息队列缓冲；防刷：验证码、风控、单用户限购。
 
-=== 7. 如何设计一个短链接系统？
+=== 如何设计一个短链接系统？
 
 - 发号：自增 ID/雪花 → Base62 编码；或哈希 + 冲突处理。
 - 存储：Redis 热数据 + DB 持久。
 - 重定向：301（永久省请求）/302（便于统计）。
 - 优化：布隆过滤器防无效查询、缓存热点。
 
-=== 8. 分布式锁有哪些实现？优缺点？
+=== 分布式锁有哪些实现？优缺点？
 
 - Redis：`SET NX EX` + Lua 释放 + 看门狗，性能高但主从切换可能丢锁。
 - ZooKeeper：临时顺序节点，强一致但写性能低。
 - etcd：租约 + 事务，强一致。
 - 要点：互斥、防误删（唯一 token）、可重入、自动续期。
 
-=== 9. 注册中心 CAP 取舍（ZooKeeper vs Eureka vs Nacos）？
+=== 注册中心 CAP 取舍（ZooKeeper vs Eureka vs Nacos）？
 
 - ZooKeeper：CP，强一致，网络分区时可能拒绝服务。
 - Eureka：AP，可用性优先，各节点可读旧数据，自我保护。
 - Nacos：AP + CP 可切换（默认 AP，临时实例 AP / 持久实例 CP）。
 - 服务发现更看重可用性，故常用 AP 型。
 
-=== 10. 如何设计一个高并发、高可用的系统？
+=== 如何设计一个高并发、高可用的系统？
 
 - 高并发：水平扩展（无状态 + 负载均衡）、多级缓存、异步（MQ）、池化、读写分离、分库分表、CDN。
 - 高可用：冗余副本、故障转移、资源隔离、容灾多活、监控告警、灰度发布。
 
-=== 11. 什么是 Service Mesh？解决什么问题？
+=== 什么是 Service Mesh？解决什么问题？
 
 - Service Mesh（如 Istio/Envoy）：以 sidecar 代理下沉服务治理（流量管理、熔断、限流、安全、可观测性），业务代码与基础设施解耦。
 - 解决：多语言统一治理、治理逻辑与业务解耦、减少 SDK 升级负担。
 
-=== 12. 链路追踪如何实现？
+=== 链路追踪如何实现？
 
 - 一次请求生成全局 `traceId`，跨服务透传（HTTP Header/RPC 元数据），每个服务生成 `span` 记录耗时与父子关系，上报到 SkyWalking/Zipkin/Jaeger，据此还原调用链与定位慢节点。
 
-=== 13. 分布式 ID 生成方案有哪些？
+=== 分布式 ID 生成方案有哪些？
 
 - UUID（无序，索引差）、数据库号段（批量分配）、Redis 自增（依赖 Redis）、雪花算法（趋势递增，需处理时钟回拨）。
 - 雪花：时间戳 + 机器 ID + 序列号。
 
-=== 14. 你的项目如何做技术选型与权衡？
+=== 你的项目如何做技术选型与权衡？
 
 - 答题框架：需求（QPS/数据量/一致性）→ 候选方案对比（性能/成本/维护/团队熟悉度）→ 选择与理由 → 权衡与取舍（强一致 vs 最终一致、同步 vs 异步）。
 - 结合自己项目：如选 MySQL 而非 TiDB 因团队熟悉与成本；选 Kafka 而非 RocketMQ 因大数据场景等。
 
-=== 15. 什么是 SDD？用 AI 工具做规格驱动开发要注意什么？
+=== 什么是 SDD？用 AI 工具做规格驱动开发要注意什么？
 
 - 定义：Spec-Driven Development，先产出结构化、可验收的规格文档，再由 AI 依据规格生成计划、任务与代码，规格是全过程唯一事实源；相对 "vibe coding" 更工程化、可控。
 - 流程：Specify（规格）→ Plan（计划）→ Tasks（任务）→ Implement（实现）→ Verify（验证），每阶段人工确认后再进入下一阶段。
 - 原则：规格先行、单一事实源、可验收、分层拆解、小步可验证、人掌舵 AI 执行、约束上下文、可追溯。
 - 注意坑：规格模糊或过大、代码与规格不同步、跳过 Plan 直接改代码、直接信任生成结果、上下文污染、规则文件膨胀、未声明禁区、敏感信息入上下文。
 - 工具：Cursor 用 `.cursorrules`/`.cursor/rules/*.mdc` + Plan 模式 + `@file` 精确上下文；CodeBuddy 用 `CODEBUDDY.md`/`.codebuddy/rules/` + Ask→Plan→Craft 模式 + 检查点回滚。
+
+=== 字段级权限怎么设计？如何让销售看不到进货价？
+
+- *定位*：功能权限（能不能调接口）→ 行级权限（能不能看这行）→ 字段级权限（这行里哪些列能看/能改），三层叠加。
+- *配置*：登记敏感字段元数据（默认拒绝），规则按「主体（角色/用户/部门/岗位/租户）× 资源（接口/报表）× 字段 × ABAC 条件 × 效果（ALLOW/DENY/MASK/READONLY）」建模，放配置中心 + 本地缓存；多角色按 *DENY 优先*。
+- *实现*：前端隐藏不安全；推荐 *SQL 层列裁剪*（MyBatis 动态 `<if>` 或按角色视图，禁止 `SELECT *`）+ *序列化出口统一脱敏*（`ResponseBodyAdvice` / `@JsonView`）双保险。
+- *一致性*：详情、列表、导出、报表、日志、消息、搜索索引、开放 API 走同一套可见字段集合；写操作按可写字段白名单拷贝，别把请求体直接透传。
+- *加分点*：防越权推断——字段不返回但允许按它排序/过滤/聚合，仍可反推出值；还要考虑缓存、动态 SQL 执行计划、配置变更实时生效、审计与自动化回归。详见「字段级权限设计（列级数据权限）」。
